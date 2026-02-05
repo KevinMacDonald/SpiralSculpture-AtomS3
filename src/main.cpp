@@ -1,12 +1,14 @@
 #include <M5Unified.h>
+#include <Arduino.h>
+
+#define LED_PIN 35
 
 void setup() {
     auto cfg = M5.config();
     cfg.serial_baudrate = 115200; // M5Unified will handle Serial.begin
     M5.begin(cfg);
 
-    // Set initial brightness (0-255)
-    M5.Led.setBrightness(60);
+    // Using raw neopixelWrite because M5.Led is not responding
     
     Serial.println("AtomS3 Lite M5Unified Ready");
 }
@@ -25,12 +27,12 @@ void loop() {
         if (state) {
             // If button is held, show Blue, otherwise Green
             if (M5.BtnA.isPressed()) {
-                M5.Led.setColor(0, 0, 0, 255); // Blue
+                neopixelWrite(LED_PIN, 0, 0, 20); // Blue
             } else {
-                M5.Led.setColor(0, 0, 255, 0); // Green
+                neopixelWrite(LED_PIN, 0, 20, 0); // Green
             }
         } else {
-            M5.Led.setColor(0, 0, 0, 0); // Off
+            neopixelWrite(LED_PIN, 0, 0, 0); // Off
         }
     }
 
