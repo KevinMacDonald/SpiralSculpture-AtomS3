@@ -1,25 +1,40 @@
-#include <Arduino.h>
-
-// AtomS3 Lite Internal LED is on GPIO 35
-#define LED_PIN 35
+#include <M5Unified.h>
 
 void setup() {
-    // No M5.begin() or complex init. Just raw hardware check.
-    // The USB Serial is handled automatically by the build flags.
-    Serial.begin(115200);
-    delay(2000); // Give USB time to enumerate
+    auto cfg = M5.config();
+    cfg.serial_baudrate = 115200; // M5Unified will handle Serial.begin
+    M5.begin(cfg);
+
+    // Set initial brightness (0-255)
+    M5.Led.setBrightness(60);
+    
+    Serial.println("AtomS3 Lite M5Unified Ready");
 }
 
 void loop() {
-    // Blink Green using built-in ESP32-S3 helper
-    // neopixelWrite(pin, red, green, blue);
-    neopixelWrite(LED_PIN, 0, 20, 0); 
-    delay(500);
-    
-    // Off
-    neopixelWrite(LED_PIN, 0, 0, 0);
-    delay(500);
+    M5.update(); // Update button states
 
-    // Print heartbeat to USB Serial
-    Serial.println("AtomS3 Lite is ALIVE");
+    // Simple Blink Logic
+    static uint32_t last_ms = 0;
+    static bool state = false;
+
+    if (millis() - last_ms > 500) {
+        last_ms = millis();
+        state = !state;
+        
+        if (state) {
+            // If button is held, show Blue, otherwise Green
+            if (M5.BtnA.isPressed()) {
+                M5.Led.setColor(0, 0, 0, 255); // Blue
+            } else {
+                M5.Led.setColor(0, 0, 255, 0); // Green
+            }
+        } else {
+            M5.Led.setColor(0, 0, 0, 0); // Off
+        }
+    }
+
+    if (M5.BtnA.wasPressed()) {
+        Serial.println("Button Pressed!");
+    }
 }
