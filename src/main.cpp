@@ -3,61 +3,90 @@
 
 #define LED_PIN 35
 
-// Motor Pins for Atom H-Driver (PH/EN Mode)
-// Based on testing: G6 is Enable (Speed), G5 is Phase (Direction)
-#define PIN_ENABLE 6
-#define PIN_PHASE  5
+// Motor Pins (Confirmed working)
+#define PIN_IN1 5
+#define PIN_IN2 6
 
-// PWM Settings
-#define PWM_FREQ 30000 // 30kHz to reduce motor noise
+// PWM Configuration
+#define PWM_FREQ 10000 // 10kHz (More reliable for drivers)
 #define PWM_RES 8      // 8-bit resolution (0-255)
-#define PWM_CH_ENABLE 0
+#define PWM_CH1 4      // Changed channel to avoid conflicts
+#define PWM_CH2 5      // Changed channel to avoid conflicts
 
 void setup() {
     auto cfg = M5.config();
-    cfg.serial_baudrate = 115200; // M5Unified will handle Serial.begin
+    cfg.serial_baudrate = 115200;
     M5.begin(cfg);
+    
+    // Reset pins to ensure no other peripheral is holding them
+    gpio_reset_pin((gpio_num_t)PIN_IN1);
+    gpio_reset_pin((gpio_num_t)PIN_IN2);
 
-    // Setup Enable Pin (PWM for Speed)
-    ledcSetup(PWM_CH_ENABLE, PWM_FREQ, PWM_RES);
-    ledcAttachPin(PIN_ENABLE, PWM_CH_ENABLE);
+    // Setup PWM channels
+    ledcSetup(PWM_CH1, PWM_FREQ, PWM_RES);
+    ledcSetup(PWM_CH2, PWM_FREQ, PWM_RES);
+
+    // Attach pins to channels
+    ledcAttachPin(PIN_IN1, PWM_CH1);
+    ledcAttachPin(PIN_IN2, PWM_CH2);
+
+    // Initialize to 0
+    ledcWrite(PWM_CH1, 0);
+    ledcWrite(PWM_CH2, 0);
     
-    // Setup Phase Pin (Digital for Direction)
-    pinMode(PIN_PHASE, OUTPUT);
-    
-    Serial.println("AtomS3 Lite Motor Control: PH/EN Mode Corrected");
+    Serial.println("AtomS3 Lite Motor Control: Smooth Ramping");
 }
 
 void loop() {
-    M5.update(); // Update button states
+    M5.update();
 
-    // 1. Rotate Direction A (Clockwise)
-    Serial.println("Direction A (PH=HIGH, EN=PWM)");
-    neopixelWrite(LED_PIN, 0, 20, 0); // Green
-    
-    digitalWrite(PIN_PHASE, HIGH);   // Set Direction A
-    ledcWrite(PWM_CH_ENABLE, 200);   // Set Speed
-    delay(3000);
+    // --- 1. Accelerate Clockwise (Green) ---
+    Serial.println("Accelerating CW");
+    neopixelWrite(LED_PIN, 0, 50, 0); 
 
-    // 2. Stop/Pause
-    Serial.println("Stopping");
-    neopixelWrite(LED_PIN, 20, 0, 0); // Red
-    
-    ledcWrite(PWM_CH_ENABLE, 0);     // Stop
-    delay(2000);
+    for (int speed = 50; speed <= 255; speed++) {
+        ledcWrite(PWM_CH1, speed);
+        ledcWrite(PWM_CH2, 0);
+        delay(10); // Adjust this delay to change acceleration speed
+    }
+    delay(1000); // Hold max speed
 
-    // 3. Rotate Direction B (Counter-Clockwise)
-    Serial.println("Direction B (PH=LOW, EN=PWM)");
-    neopixelWrite(LED_PIN, 0, 0, 20); // Blue
+    // --- 2. Decelerate Clockwise ---
+    Serial.println("Decelerating CW");
+    for (int speed = 255; speed >= 0; speed--) {
+        ledcWrite(PWM_CH1, speed);
+        ledcWrite(PWM_CH2, 0);
+        delay(10);
+    }
     
-    digitalWrite(PIN_PHASE, LOW);    // Set Direction B
-    ledcWrite(PWM_CH_ENABLE, 200);   // Set Speed
-    delay(3000);
+    // Stop (Red)
+    neopixelWrite(LED_PIN, 50, 0, 0); 
+    ledcWrite(PWM_CH1, 0);
+    ledcWrite(PWM_CH2, 0);
+    delay(1000);
 
-    // 4. Stop/Pause
-    Serial.println("Stopping");
-    neopixelWrite(LED_PIN, 20, 0, 0); // Red
+    // --- 3. Accelerate Counter-Clockwise (Blue) ---
+    Serial.println("Accelerating CCW");
+    neopixelWrite(LED_PIN, 0, 0, 50); 
+
+    for (int speed = 50; speed <= 255; speed++) {
+        ledcWrite(PWM_CH1, 0);
+        ledcWrite(PWM_CH2, speed);
+        delay(10);
+    }
+    delay(1000); // Hold max speed
+
+    // --- 4. Decelerate Counter-Clockwise ---
+    Serial.println("Decelerating CCW");
+    for (int speed = 255; speed >= 0; speed--) {
+        ledcWrite(PWM_CH1, 0);
+        ledcWrite(PWM_CH2, speed);
+        delay(10);
+    }
     
-    ledcWrite(PWM_CH_ENABLE, 0);     // Stop
-    delay(2000);
+    // Stop (Red)
+    neopixelWrite(LED_PIN, 50, 0, 0); 
+    ledcWrite(PWM_CH1, 0);
+    ledcWrite(PWM_CH2, 0);
+    delay(1000);
 }
