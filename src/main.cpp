@@ -10,8 +10,11 @@
 // PWM Configuration
 #define PWM_FREQ 10000 // 10kHz (More reliable for drivers)
 #define PWM_RES 8      // 8-bit resolution (0-255)
-#define PWM_CH1 4      // Changed channel to avoid conflicts
-#define PWM_CH2 5      // Changed channel to avoid conflicts
+#define PWM_CH1 0      // Changed channel to avoid conflicts
+#define PWM_CH2 1      // Changed channel to avoid conflicts
+
+bool direction    = true;
+int counter = 0;
 
 void setup() {
     auto cfg = M5.config();
@@ -32,12 +35,75 @@ void setup() {
 
     // Initialize to 0
     ledcWrite(PWM_CH1, 0);
-    ledcWrite(PWM_CH2, 0);
-    
-    Serial.println("AtomS3 Lite Motor Control: Smooth Ramping");
+    ledcWrite(PWM_CH2, 0);    
 }
 
-void loop() {
+
+void my_loop()
+{
+    M5.update();
+
+    counter++;
+
+    Serial.println("bbbMy Loop:" + String(counter));
+
+/*
+    if (M5.BtnA.pressedFor(2000)) {
+            Serial.println("Long press detected!");
+    }
+*/
+    if (M5.BtnA.wasPressed()) {
+        if (direction) {
+
+            Serial.println("Accelerating CW");
+            neopixelWrite(LED_PIN, 0, 50, 0); 
+
+            for (int speed = 50; speed <= 255; speed++) {
+                ledcWrite(PWM_CH1, speed);
+                ledcWrite(PWM_CH2, 0);
+                delay(10); // Adjust this delay to change acceleration speed
+            }
+            delay(1000); // Hold max speed
+
+            // --- 2. Decelerate Clockwise ---
+            Serial.println("Decelerating CW");
+            for (int speed = 255; speed >= 0; speed--) {
+                ledcWrite(PWM_CH1, speed);
+                ledcWrite(PWM_CH2, 0);
+                delay(10);
+            }
+
+        } else {        
+            Serial.println("Accelerating CCW");
+            neopixelWrite(LED_PIN, 0, 0, 50); 
+
+            for (int speed = 50; speed <= 255; speed++) {
+                ledcWrite(PWM_CH1, 0);
+                
+                ledcWrite(PWM_CH2, speed);
+                delay(10);
+            }
+            delay(500); // Hold max speed
+
+            // --- 4. Decelerate Counter-Clockwise ---
+            Serial.println("Decelerating CCW");
+            for (int speed = 255; speed >= 0; speed--) {
+                ledcWrite(PWM_CH1, 0);
+                ledcWrite(PWM_CH2, speed);
+                delay(10);
+            }
+        }
+        direction = !direction;
+    }
+
+    delay(500);
+
+}
+
+
+void gemini_loop() {
+    Serial.println("Gemini Loop");
+
     M5.update();
 
     // --- 1. Accelerate Clockwise (Green) ---
@@ -74,7 +140,7 @@ void loop() {
         ledcWrite(PWM_CH2, speed);
         delay(10);
     }
-    delay(1000); // Hold max speed
+    delay(500); // Hold max speed
 
     // --- 4. Decelerate Counter-Clockwise ---
     Serial.println("Decelerating CCW");
@@ -89,4 +155,10 @@ void loop() {
     ledcWrite(PWM_CH1, 0);
     ledcWrite(PWM_CH2, 0);
     delay(1000);
+}
+
+void loop() 
+{
+    my_loop();
+    //gemini_loop();
 }
