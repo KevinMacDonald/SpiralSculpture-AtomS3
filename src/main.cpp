@@ -26,6 +26,10 @@ const int RAMP_STEP = 5;            // How much to change speed in each ramp ste
 const int DEFAULT_RAMP_DURATION_MS = 2000; // Default duration for a full ramp
 int currentRampDuration = DEFAULT_RAMP_DURATION_MS; // Variable to change ramp duration (in milliseconds)
 
+// Auto-reverse settings
+unsigned long autoReverseDelay = 0; // Time in ms. Disabled if < 5000.
+unsigned long lastButtonReleaseTime = 0;
+
 bool isDirectionClockwise = true;
 bool isMotorRunning = false;
 int speed = LOGICAL_INITIAL_SPEED; // Current LOGICAL motor speed.
@@ -96,6 +100,29 @@ void rampMotor(int fromSpeed, int toSpeed, bool clockwise) {
     setMotorDuty(mapSpeedToDuty(toSpeed), clockwise); // Ensure final speed is set
 }
 
+/**
+ * @brief Reverses the motor's direction with a smooth ramp-down and ramp-up.
+ * This is a blocking function.
+ */
+void reverseDirection() {
+    Serial.println("Reversing direction smoothly.");
+
+    int currentLogicalSpeed = isMotorRunning ? speed : 0;
+
+    // 1. Ramp down from current speed to zero.
+    rampMotor(currentLogicalSpeed, 0, isDirectionClockwise);
+
+    // 2. Toggle direction state.
+    isDirectionClockwise = !isDirectionClockwise;
+
+    // 3. Update LED and motor state.
+    neopixelWrite(LED_PIN, 0, isDirectionClockwise ? 50 : 0, isDirectionClockwise ? 0 : 50);
+    isMotorRunning = true;
+
+    // 4. Ramp up from zero to target speed in the new direction.
+    rampMotor(0, speed, isDirectionClockwise);
+}
+
 void smoothStopMotor() {
     Serial.println("Ramping down to stop...");
     rampMotor(speed, 0, isDirectionClockwise);
@@ -128,12 +155,19 @@ void setup() {
     ledcWrite(ledChannel2, 0);
     isMotorRunning = false;
 
+    autoReverseDelay = 6000; // Example: Enable auto-reverse after 6 seconds. Set to 0 to disable.
+
     neopixelWrite(LED_PIN, 255, 255, 255);
 }
 
 
 void loop() {
     M5.update(); // Required for button state updates
+
+    // Keep track of the last time the user interacted with the button.
+    if (M5.BtnA.wasReleased()) {
+        lastButtonReleaseTime = millis();
+    }
 
     // Priority 1: Long Press. This is the highest priority and cancels any pending clicks.
     if (M5.BtnA.pressedFor(2000)) {
@@ -142,23 +176,8 @@ void loop() {
             smoothStopMotor();
         }
     }
-    else if (M5.BtnA.wasSingleClicked()) {            
-        Serial.println("Single Click: Reversing direction smoothly.");
-
-        int currentLogicalSpeed = isMotorRunning ? speed : 0;
-
-        // 1. Ramp down from current speed to zero.
-        rampMotor(currentLogicalSpeed, 0, isDirectionClockwise);
-
-        // 2. Toggle direction state.
-        isDirectionClockwise = !isDirectionClockwise;
-
-        // 3. Update LED and motor state.
-        neopixelWrite(LED_PIN, 0, isDirectionClockwise ? 50 : 0, isDirectionClockwise ? 0 : 50);
-        isMotorRunning = true;
-
-        // 4. Ramp up from zero to target speed in the new direction.
-        rampMotor(0, speed, isDirectionClockwise);
+    else if (M5.BtnA.wasSingleClicked()) {
+        reverseDirection();
     }
     else if (M5.BtnA.wasDoubleClicked()) {
         Serial.println("Double Click: Increasing speed smoothly.");
@@ -173,6 +192,16 @@ void loop() {
         if (isMotorRunning) {
             // Ramp smoothly from the old speed to the new speed.
             rampMotor(oldSpeed, newSpeed, isDirectionClockwise);
+        }
+    }
+
+    // Auto-reverse logic
+    if (isMotorRunning && autoReverseDelay >= 5000) {
+        if (millis() - lastButtonReleaseTime > autoReverseDelay) {
+            Serial.println("Auto-reversing due to inactivity...");
+            reverseDirection();
+            // After auto-reversing, reset the timer to prevent it from firing again immediately.
+            lastButtonReleaseTime = millis();
         }
     }
 }
