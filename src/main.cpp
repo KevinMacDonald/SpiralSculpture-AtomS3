@@ -17,20 +17,22 @@ const int ledChannel2 = 1;
 const int MAX_SPEED = 900;
 const int MIN_SPEED = 500;
 const int SPEED_INCREMENT = 25;
+const int INITIAL_SPEED = 600; // The default speed when starting/after stopping.
 
 bool direction = true;
 bool isMotorRunning = false;
+int speed = INITIAL_SPEED; // Current motor speed. Range of 500 to 900ish works.
 
 void stopMotor() {
     Serial.println("Stopping");
     ledcWrite(ledChannel1, 0);
     ledcWrite(ledChannel2, 0);
     isMotorRunning = false;
+    speed = INITIAL_SPEED; // Reset speed to default when motor is stopped.
 }
 
 void runMotorClockwise(int speed)
 {
-    Serial.println("Clockwise Speed:" + String(speed));
     Serial.print("Clockwise Speed: ");
     Serial.println(speed);
     ledcWrite(ledChannel1, 0);
@@ -40,7 +42,6 @@ void runMotorClockwise(int speed)
 
 void runMotorCounterClockwise(int speed)
 {
-    Serial.println("CounterClockwise Speed:" + String(speed));
     Serial.print("CounterClockwise Speed: ");
     Serial.println(speed);
     ledcWrite(ledChannel1, speed);
@@ -74,19 +75,20 @@ void setup() {
 }
 
 
-
-int speed = 600; //Range of 500 to 900ish works. The upper end gets noisy.
-
 void loop() {
     M5.update(); // Required for button state updates
 
     // Priority 1: Stop motor on a long press.
     if (M5.BtnA.pressedFor(2000)) {
-        neopixelWrite(LED_PIN, 50, 0, 0); //Red
-        stopMotor();        
+        if (isMotorRunning) { // Only stop if it's currently running
+            neopixelWrite(LED_PIN, 50, 0, 0); //Red
+            stopMotor();
+        }
     }
-    // Priority 2: Increase speed on a double-click.
+    // Priority 2: Handle double-clicks for speed increase.
+    // This is checked before single-clicks to ensure it gets priority.
     else if (M5.BtnA.wasDoubleClicked()) {
+        // Double-click: Increase speed
         speed = min(MAX_SPEED, speed + SPEED_INCREMENT);
         Serial.print("New speed: ");
         Serial.println(speed);
@@ -99,15 +101,17 @@ void loop() {
             }
         }
     }
-    // Priority 3: Toggle motor direction on a single click.
+    // Priority 3: Handle single-clicks to toggle direction.
+    // wasClicked() is designed to NOT fire if a double-click is detected.
     else if (M5.BtnA.wasClicked()) {
-        if (direction) {
-            neopixelWrite(LED_PIN, 0, 0, 50); //Blue
-            runMotorCounterClockwise(speed); 
-        } else {
+        // Single-click: Toggle motor direction and run
+        direction = !direction; // Toggle direction state
+        if (direction) { // true == Clockwise
             neopixelWrite(LED_PIN, 0, 50, 0); //Green
             runMotorClockwise(speed);
+        } else { // false == Counter-Clockwise
+            neopixelWrite(LED_PIN, 0, 0, 50); //Blue
+            runMotorCounterClockwise(speed);
         }
-        direction = !direction;
     }
 }
