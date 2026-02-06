@@ -4,8 +4,8 @@
 #define LED_PIN 35
 
 // Atomic H-Driver Pin Definitions
-const int IN1_PIN = 5;
-const int IN2_PIN = 6;
+const int IN1_PIN = 6;
+const int IN2_PIN = 7;
 
 // PWM Settings
 const int freq = 25000;
@@ -14,7 +14,26 @@ const int ledChannel1 = 0;
 const int ledChannel2 = 1;
 
 bool direction = true;
-int counter = 0;
+
+void stopMotor() {
+    Serial.println("Stopping");
+    ledcWrite(ledChannel1, 0);
+    ledcWrite(ledChannel2, 0);
+}
+
+void runMotorClockwise(int speed)
+{
+    Serial.println("Clockwise Speed:" + String(speed));
+    ledcWrite(ledChannel1, 0);
+    ledcWrite(ledChannel2, speed);
+}
+
+void runMotorCounterClockwise(int speed)
+{
+    Serial.println("CounterClockwise Speed:" + String(speed));
+    ledcWrite(ledChannel1, speed);
+    ledcWrite(ledChannel2, 0);
+}
 
 void setup() {
     auto cfg = M5.config();
@@ -36,63 +55,33 @@ void setup() {
     ledcAttachPin(IN2_PIN, ledChannel2);
     
     // Initial State: Stopped
-    ledcWrite(ledChannel1, 0);
-    ledcWrite(ledChannel2, 0);
+    stopMotor();
     
     neopixelWrite(LED_PIN, 255, 255, 255);
 }
 
-void runMotorForward(int speed)
-{
-    Serial.println("Speed:" + String(speed));
-    ledcWrite(ledChannel1, 0);
-    ledcWrite(ledChannel2, speed);
-}
 
-int speed = 600;
+
+int speed = 600; //Range of 500 to 900ish works. The upper end gets noisy.
 
 void loop() {
     M5.update(); // Required for button state updates
 
-    counter++;
-    if (counter == 1) {
-        runMotorForward(speed);  //Initialize to motor on.
-        direction = false; //next button press should reverse it.
+    // Stop motor on long press. Check this first to override short clicks.
+    if (M5.BtnA.pressedFor(2000)) {
+        neopixelWrite(LED_PIN, 50, 0, 0); //Red
+        stopMotor();        
     }
-
-    if ((counter % 1000000) == 0) {
-        Serial.println("My Loop:" + String(counter));
-    }
-
-    // Toggle motor on button press
-    if (M5.BtnA.wasPressed()) {
-        speed += 25;
-        if (speed >= 1000)
-        {
-            speed = 600;
-        }
-        runMotorForward(speed); 
-/*
+    // Toggle motor direction on a short click.
+    // wasClicked() fires on release and won't trigger if it was a long press.
+    else if (M5.BtnA.wasClicked()) {
         if (direction) {
             neopixelWrite(LED_PIN, 0, 0, 50); //Blue
-
+            runMotorCounterClockwise(speed); 
         } else {
             neopixelWrite(LED_PIN, 0, 50, 0); //Green
-
-            Serial.println("Reverse");
-            ledcWrite(ledChannel2, 0);
-            ledcWrite(ledChannel1, speed); 
-            //delay(7000);
+            runMotorClockwise(speed);
         }
         direction = !direction;
-*/
-        }
-
-    // Stop motor on long press
-    if (M5.BtnA.pressedFor(2000)) {
-        Serial.println("Stopping");
-        neopixelWrite(LED_PIN, 50, 0, 0); //Red
-        ledcWrite(ledChannel1, 0);
-        ledcWrite(ledChannel2, 0);
     }
 }
