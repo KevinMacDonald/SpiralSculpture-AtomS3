@@ -155,7 +155,7 @@ void setup() {
     ledcWrite(ledChannel2, 0);
     isMotorRunning = false;
 
-    autoReverseDelay = 6000; // Example: Enable auto-reverse after 6 seconds. Set to 0 to disable.
+    autoReverseDelay = 30000; // Example: Enable auto-reverse after 6 seconds. Set to 0 to disable.
 
     neopixelWrite(LED_PIN, 255, 255, 255);
 }
@@ -164,20 +164,19 @@ void setup() {
 void loop() {
     M5.update(); // Required for button state updates
 
-    // Keep track of the last time the user interacted with the button.
-    if (M5.BtnA.wasReleased()) {
-        lastButtonReleaseTime = millis();
-    }
-
     // Priority 1: Long Press. This is the highest priority and cancels any pending clicks.
     if (M5.BtnA.pressedFor(2000)) {
         if (isMotorRunning) { // Only stop if it's currently running
             neopixelWrite(LED_PIN, 50, 0, 0); // Red
             smoothStopMotor();
+            // Reset the auto-reverse timer after the action is complete.
+            lastButtonReleaseTime = millis();
         }
     }
     else if (M5.BtnA.wasSingleClicked()) {
         reverseDirection();
+        // Reset the auto-reverse timer after the action is complete.
+        lastButtonReleaseTime = millis();
     }
     else if (M5.BtnA.wasDoubleClicked()) {
         Serial.println("Double Click: Increasing speed smoothly.");
@@ -193,6 +192,8 @@ void loop() {
             // Ramp smoothly from the old speed to the new speed.
             rampMotor(oldSpeed, newSpeed, isDirectionClockwise);
         }
+        // Reset the auto-reverse timer after the action is complete.
+        lastButtonReleaseTime = millis();
     }
 
     // Auto-reverse logic
