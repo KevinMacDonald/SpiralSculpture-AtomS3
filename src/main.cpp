@@ -19,7 +19,7 @@ const int MIN_SPEED = 500;
 const int SPEED_INCREMENT = 25;
 const int INITIAL_SPEED = 600; // The default speed when starting/after stopping.
 
-bool direction = true;
+bool isDirectionClockwise = true;
 bool isMotorRunning = false;
 int speed = INITIAL_SPEED; // Current motor speed. Range of 500 to 900ish works.
 
@@ -78,40 +78,35 @@ void setup() {
 void loop() {
     M5.update(); // Required for button state updates
 
-    // Priority 1: Stop motor on a long press.
+    // Priority 1: Long Press. This is the highest priority and cancels any pending clicks.
     if (M5.BtnA.pressedFor(2000)) {
         if (isMotorRunning) { // Only stop if it's currently running
             neopixelWrite(LED_PIN, 50, 0, 0); //Red
             stopMotor();
         }
     }
-    // Priority 2: Handle double-clicks for speed increase.
-    // This is checked before single-clicks to ensure it gets priority.
-    else if (M5.BtnA.wasDoubleClicked()) {
-        // Double-click: Increase speed
-        speed = min(MAX_SPEED, speed + SPEED_INCREMENT);
-        Serial.print("New speed: ");
-        Serial.println(speed);
-        if (isMotorRunning) {
-            // Re-apply the new speed to the current direction
-            if (direction) {
-                runMotorClockwise(speed);
-            } else {
-                runMotorCounterClockwise(speed);
-            }
-        }
-    }
-    // Priority 3: Handle single-clicks to toggle direction.
-    // wasClicked() is designed to NOT fire if a double-click is detected.
-    else if (M5.BtnA.wasClicked()) {
-        // Single-click: Toggle motor direction and run
-        direction = !direction; // Toggle direction state
-        if (direction) { // true == Clockwise
+    else if (M5.BtnA.wasSingleClicked()) {            
+        // Single Click: Toggle motor direction
+        Serial.println("Single Click Detected: Toggling direction.");
+        isDirectionClockwise = !isDirectionClockwise; // Toggle direction state
+        if (isDirectionClockwise) { // true == Clockwise
             neopixelWrite(LED_PIN, 0, 50, 0); //Green
             runMotorClockwise(speed);
         } else { // false == Counter-Clockwise
             neopixelWrite(LED_PIN, 0, 0, 50); //Blue
             runMotorCounterClockwise(speed);
+        }
+    }
+    else if (M5.BtnA.wasDoubleClicked()) {
+        // Double Click: Increase speed
+        Serial.println("Double Click Detected: Increasing speed.");
+        speed = min(MAX_SPEED, speed + SPEED_INCREMENT);
+        Serial.print("New speed: ");
+        Serial.println(speed);
+        if (isMotorRunning) {
+            // Re-apply the new speed to the current direction
+            if (isDirectionClockwise) runMotorClockwise(speed);
+            else runMotorCounterClockwise(speed);
         }
     }
 }
