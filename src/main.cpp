@@ -42,10 +42,23 @@ void setup() {
     neopixelWrite(LED_PIN, 255, 255, 255);
 }
 
+void runMotorForward(int speed)
+{
+    Serial.println("Speed:" + String(speed));
+    ledcWrite(ledChannel1, 0);
+    ledcWrite(ledChannel2, speed);
+}
+
+int speed = 600;
+
 void loop() {
     M5.update(); // Required for button state updates
 
     counter++;
+    if (counter == 1) {
+        runMotorForward(speed);  //Initialize to motor on.
+        direction = false; //next button press should reverse it.
+    }
 
     if ((counter % 1000000) == 0) {
         Serial.println("My Loop:" + String(counter));
@@ -53,16 +66,15 @@ void loop() {
 
     // Toggle motor on button press
     if (M5.BtnA.wasPressed()) {
-        int speed = 600;
-        Serial.println("Speed:" + String(speed));
-
+        speed += 25;
+        if (speed >= 1000)
+        {
+            speed = 600;
+        }
+        runMotorForward(speed); 
+/*
         if (direction) {
             neopixelWrite(LED_PIN, 0, 0, 50); //Blue
-
-            Serial.println("Forward");
-            ledcWrite(ledChannel1, 0);
-            ledcWrite(ledChannel2, speed);
-            delay(7000);
 
         } else {
             neopixelWrite(LED_PIN, 0, 50, 0); //Green
@@ -70,10 +82,11 @@ void loop() {
             Serial.println("Reverse");
             ledcWrite(ledChannel2, 0);
             ledcWrite(ledChannel1, speed); 
-            delay(7000);
+            //delay(7000);
         }
         direction = !direction;
-    }
+*/
+        }
 
     // Stop motor on long press
     if (M5.BtnA.pressedFor(2000)) {
