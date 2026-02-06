@@ -1,5 +1,9 @@
 #include <M5Unified.h>
 #include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <stdarg.h>
 
 #define LED_PIN 35
 
@@ -23,14 +27,55 @@ const int LOGICAL_INITIAL_SPEED = 600; // The default logical speed
 
 // Ramping settings
 const int RAMP_STEP = 5;            // How much to change speed in each ramp step
-const int DEFAULT_RAMP_DURATION_MS = 2000; // Default duration for a full ramp
+const int DEFAULT_RAMP_DURATION_MS = 4000; // Default duration for a full ramp
 int currentRampDuration = DEFAULT_RAMP_DURATION_MS; // Variable to change ramp duration (in milliseconds)
+
+// --- Remote Control ---
+// See the following for generating UUIDs:
+// https://www.uuidgenerator.net/
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define COMMAND_CHAR_UUID   "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define RAMP_CHAR_UUID      "c8a9353c-3893-43a8-9233-359c43530857"
+BLECharacteristic *pRampCharacteristic = nullptr;
+
+// --- Motor State Machine ---
+// This replaces the blocking delay() functions with a responsive state machine.
+enum MotorState {
+    MOTOR_IDLE,
+    MOTOR_RAMPING_DOWN,
+    MOTOR_RAMPING_UP
+};
+MotorState motorState = MOTOR_IDLE;
+int currentLogicalSpeed = 0; // The actual current speed of the motor
+int speedSetting = LOGICAL_INITIAL_SPEED; // The user's desired speed setting
+int targetLogicalSpeed = 0; // The immediate target for the current ramp
+unsigned long lastRampStepTime = 0;
+unsigned long rampStepDelay = 0;
+bool reverseAfterRampDown = false;
 
 bool isDirectionClockwise = true;
 bool isMotorRunning = false;
-int speed = LOGICAL_INITIAL_SPEED; // Current LOGICAL motor speed.
 
+// --- Throttled Logging --- DO NOT REMOVE THIS. It is useful to have. 
+// A helper function for timestamped logs that can be throttled to prevent flooding the serial port.
+// Set MIN_LOG_GAP_MS to a value like 50 or 200 to enable throttling.
+unsigned long MIN_LOG_GAP_MS = 250; // Throttle logs to one line every 250ms for debugging.
+unsigned long lastLogTimestamp = 0;
 
+void log_t(const char* format, ...) {
+    unsigned long now = millis();
+    if (MIN_LOG_GAP_MS == 0 || (now - lastLogTimestamp > MIN_LOG_GAP_MS)) {
+        char buf[256];
+        va_list args;
+        va_start(args, format);
+        vsnprintf(buf, sizeof(buf), format, args);
+        va_end(args);
+        Serial.printf("%lu ms: %s\n", now, buf);
+        lastLogTimestamp = now;
+    }
+}
+
+// --- Core Motor & Mapping Functions ---
 /**
  * @brief Sets the raw PWM duty cycle for the motor channels.
  * 
@@ -58,51 +103,143 @@ int mapSpeedToDuty(int logicalSpeed) {
     if (logicalSpeed <= 0) {
         return 0;
     }
-    // Map the logical speed (1-1000) to the physical PWM duty range (MIN to MAX)
-    return map(logicalSpeed, 1, LOGICAL_MAX_SPEED, PHYSICAL_MIN_SPEED, PHYSICAL_MAX_SPEED);
+    // Apply a quadratic easing function to make the ramp-up feel smoother.
+    // This compensates for the motor's non-linear response at low speeds.
+    float normalizedSpeed = (float)logicalSpeed / LOGICAL_MAX_SPEED;
+    float easedSpeed = normalizedSpeed * normalizedSpeed;
+
+    // Map the eased, normalized speed to the physical PWM duty range.
+    return PHYSICAL_MIN_SPEED + (easedSpeed * (PHYSICAL_MAX_SPEED - PHYSICAL_MIN_SPEED));
 }
 
-/**
- * @brief Smoothly ramps the motor speed from a starting duty cycle to an ending one.
- * This is a blocking function.
- * 
- * @param fromDuty The starting PWM duty cycle.
- * @param toDuty The ending PWM duty cycle.
- * @param clockwise The direction of rotation.
- */
-void rampMotor(int fromSpeed, int toSpeed, bool clockwise) {
-    if (fromSpeed == toSpeed) {
-        setMotorDuty(mapSpeedToDuty(toSpeed), clockwise);
-        return;
+// --- State Change Functions (Non-Blocking) ---
+void triggerStart() {
+    log_t("Triggering start...");
+    if (!isMotorRunning) {
+        targetLogicalSpeed = speedSetting;
+        motorState = MOTOR_RAMPING_UP;
+        isMotorRunning = true;
+        neopixelWrite(LED_PIN, 0, isDirectionClockwise ? 50 : 0, isDirectionClockwise ? 0 : 50);
     }
-
-    int step = (fromSpeed < toSpeed) ? RAMP_STEP : -RAMP_STEP;
-    int totalSpeedChange = abs(toSpeed - fromSpeed);
-    int numSteps = totalSpeedChange / RAMP_STEP;
-
-    if (numSteps == 0) {
-        setMotorDuty(mapSpeedToDuty(toSpeed), clockwise);
-        return;
-    }
-
-    // Calculate delay per step to achieve the desired total ramp duration.
-    unsigned long delayPerStep = currentRampDuration / numSteps;
-    if (delayPerStep == 0) delayPerStep = 1; // Ensure a minimum delay of 1ms
-
-    for (int s = fromSpeed; (step > 0) ? (s <= toSpeed) : (s >= toSpeed); s += step) {
-        setMotorDuty(mapSpeedToDuty(s), clockwise);
-        delay(delayPerStep);
-    }
-    setMotorDuty(mapSpeedToDuty(toSpeed), clockwise); // Ensure final speed is set
 }
 
-void smoothStopMotor() {
-    Serial.println("Ramping down to stop...");
-    rampMotor(speed, 0, isDirectionClockwise);
-    setMotorDuty(0, isDirectionClockwise); // Ensure motor is fully off
-    isMotorRunning = false;
-    speed = LOGICAL_INITIAL_SPEED; // Reset speed to default when motor is stopped.
+void triggerReverse() {
+    log_t("Triggering smooth reverse...");
+    if (isMotorRunning) {
+        reverseAfterRampDown = true;
+        targetLogicalSpeed = 0; // Set the immediate target to ramp down to zero
+        motorState = MOTOR_RAMPING_DOWN;
+    } else {
+        // If motor is stopped, just start it in the new direction
+        isDirectionClockwise = !isDirectionClockwise;
+        triggerStart();
+    }
 }
+
+void triggerSpeedUp() {
+    speedSetting = min(LOGICAL_MAX_SPEED, speedSetting + LOGICAL_SPEED_INCREMENT);
+    log_t("Triggering speed up. New setting: %d", speedSetting);
+    if (isMotorRunning)
+    {
+        targetLogicalSpeed = speedSetting;
+        motorState = MOTOR_RAMPING_UP;
+    }
+}
+
+void triggerSpeedDown() {
+    speedSetting = max(LOGICAL_INITIAL_SPEED, speedSetting - LOGICAL_SPEED_INCREMENT);
+    log_t("Triggering speed down. New setting: %d", speedSetting);
+    if (isMotorRunning)
+    {
+        targetLogicalSpeed = speedSetting;
+        motorState = MOTOR_RAMPING_DOWN;
+    }
+}
+
+void triggerStop() {
+    log_t("Triggering stop...");
+    targetLogicalSpeed = 0;
+    motorState = MOTOR_RAMPING_DOWN;
+    reverseAfterRampDown = false; // Ensure this is false for a normal stop
+}
+
+void triggerSetSpeed(int newSpeed) {
+    speedSetting = constrain(newSpeed, 0, LOGICAL_MAX_SPEED);
+    log_t("Triggering set speed. New setting: %d", speedSetting);
+    if (isMotorRunning) {
+        targetLogicalSpeed = speedSetting;
+        if (targetLogicalSpeed > currentLogicalSpeed) {
+            motorState = MOTOR_RAMPING_UP;
+        } else if (targetLogicalSpeed < currentLogicalSpeed) {
+            motorState = MOTOR_RAMPING_DOWN;
+        }
+    }
+}
+
+// --- BLE Callbacks ---
+class CommandCallback : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (value.length() == 0) {
+            return;
+        }
+
+        log_t("Received command: %s", value.c_str());
+
+        size_t colon_pos = value.find(':');
+
+        if (colon_pos != std::string::npos) {
+            // Command with a value, e.g., "ms:800" or "ramp:4000"
+            std::string cmd = value.substr(0, colon_pos);
+            int val = atoi(value.substr(colon_pos + 1).c_str());
+
+            if (cmd == "ms") {
+                triggerSetSpeed(val);
+            } else if (cmd == "ramp") {
+                currentRampDuration = val;
+                log_t("Set Ramp Duration: %d", currentRampDuration);
+                // Also update the dedicated ramp characteristic's value
+                if (pRampCharacteristic != nullptr) {
+                    pRampCharacteristic->setValue(String(currentRampDuration).c_str());
+                }
+            } else {
+                log_t("Unknown command prefix: %s", cmd.c_str());
+            }
+
+        } else if (value.length() == 1) {
+            // Single-letter command
+            char cmd_char = value[0];
+            switch(cmd_char) {
+                case 'g': triggerStart(); break;
+                case 's': triggerStop(); break;
+                case 'r': triggerReverse(); break;
+                case 'u': triggerSpeedUp(); break;
+                case 'd': triggerSpeedDown(); break;
+                default: log_t("Unknown command: %c", cmd_char); break;
+            }
+        } else {
+            log_t("Invalid command format: %s", value.c_str());
+        }
+
+        // Update the characteristic's value so the last command can be read back.
+        pCharacteristic->setValue(value);
+    }
+};
+
+class SettingCallback : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+        std::string uuid_str = pCharacteristic->getUUID().toString();
+        std::string value_str = pCharacteristic->getValue();
+        if (value_str.length() > 0) {
+            int value = atoi(value_str.c_str());
+
+            if (uuid_str == BLEUUID(RAMP_CHAR_UUID).toString()) {
+                currentRampDuration = value;
+                log_t("Set Ramp Duration: %d", currentRampDuration);
+            }
+        }
+    }
+};
 
 void setup() {
     auto cfg = M5.config();
@@ -115,7 +252,7 @@ void setup() {
 
     delay(1000); // Give serial monitor time to connect
 
-    Serial.println("System Initialized");
+    log_t("System Initialized");
 
     // Configure PWM for H-Bridge
     ledcSetup(ledChannel1, freq, resolution);
@@ -128,6 +265,31 @@ void setup() {
     ledcWrite(ledChannel2, 0);
     isMotorRunning = false;
 
+    // --- BLE Setup ---
+    BLEDevice::init("Spiral Sculpture");
+    BLEServer *pServer = BLEDevice::createServer();
+    BLEService *pService = pServer->createService(SERVICE_UUID);
+
+    // Command Characteristic
+    BLECharacteristic *pCommandCharacteristic = pService->createCharacteristic(
+                                         COMMAND_CHAR_UUID,
+                                         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE
+                                       );
+    pCommandCharacteristic->setCallbacks(new CommandCallback());
+    pCommandCharacteristic->setValue(" "); // Set an initial value
+
+    // Ramp Duration Characteristic
+    pRampCharacteristic = pService->createCharacteristic(
+                                         RAMP_CHAR_UUID,
+                                         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE
+                                       );
+    pRampCharacteristic->setValue(String(currentRampDuration).c_str());
+    pRampCharacteristic->setCallbacks(new SettingCallback());
+
+    pService->start();
+    pServer->getAdvertising()->start();
+    log_t("BLE Server started. Waiting for a client connection...");
+
     neopixelWrite(LED_PIN, 255, 255, 255);
 }
 
@@ -135,44 +297,65 @@ void setup() {
 void loop() {
     M5.update(); // Required for button state updates
 
+    // --- Non-Blocking Motor State Machine ---
+    if (motorState != MOTOR_IDLE) {
+        // Calculate a constant step delay based on a full-range ramp to ensure a smooth, consistent ramp rate.
+        int fullRangeNumSteps = LOGICAL_MAX_SPEED / RAMP_STEP;
+        unsigned long constantRampStepDelay = (fullRangeNumSteps > 0) ? (currentRampDuration / fullRangeNumSteps) : 1;
+        if (constantRampStepDelay == 0) {
+            constantRampStepDelay = 1;
+        }
+
+        // Use the corrected, constant delay for the timer check.
+        if (millis() - lastRampStepTime > constantRampStepDelay) {
+            lastRampStepTime = millis();
+
+            if (motorState == MOTOR_RAMPING_UP) {
+                currentLogicalSpeed = min(targetLogicalSpeed, currentLogicalSpeed + RAMP_STEP);
+            } else { // RAMPING_DOWN
+                currentLogicalSpeed = max(targetLogicalSpeed, currentLogicalSpeed - RAMP_STEP);
+            }
+
+            // log_t("Ramping... Current Speed: %d", currentLogicalSpeed); // This line is too verbose for normal operation.
+
+            setMotorDuty(mapSpeedToDuty(currentLogicalSpeed), isDirectionClockwise);
+
+            // Check if ramp is complete
+            if (currentLogicalSpeed == targetLogicalSpeed) {
+                if (reverseAfterRampDown && currentLogicalSpeed == 0) {
+                    isDirectionClockwise = !isDirectionClockwise;
+                    neopixelWrite(LED_PIN, 0, isDirectionClockwise ? 50 : 0, isDirectionClockwise ? 0 : 50);
+                    targetLogicalSpeed = speedSetting; // Ramp up to the desired speed setting
+                    motorState = MOTOR_RAMPING_UP;
+                    reverseAfterRampDown = false;
+                    isMotorRunning = true;
+                } else {
+                    motorState = MOTOR_IDLE;
+                    if (currentLogicalSpeed == 0) {
+                        isMotorRunning = false;
+                        speedSetting = LOGICAL_INITIAL_SPEED; // Reset for next start
+                        neopixelWrite(LED_PIN, 50, 0, 0); // Red
+                    }
+                    log_t("Ramp complete.");
+                }
+            }
+        }
+    }
+
     // Priority 1: Long Press. This is the highest priority and cancels any pending clicks.
     if (M5.BtnA.pressedFor(2000)) {
-        if (isMotorRunning) { // Only stop if it's currently running
-            neopixelWrite(LED_PIN, 50, 0, 0); // Red
-            smoothStopMotor();
+        // Only trigger a stop if the motor is running and not already in the process of stopping.
+        if (isMotorRunning && !(motorState == MOTOR_RAMPING_DOWN && targetLogicalSpeed == 0)) {
+            triggerStop();
         }
     }
-    else if (M5.BtnA.wasSingleClicked()) {            
-        Serial.println("Single Click: Reversing direction smoothly.");
-
-        int currentLogicalSpeed = isMotorRunning ? speed : 0;
-
-        // 1. Ramp down from current speed to zero.
-        rampMotor(currentLogicalSpeed, 0, isDirectionClockwise);
-
-        // 2. Toggle direction state.
-        isDirectionClockwise = !isDirectionClockwise;
-
-        // 3. Update LED and motor state.
-        neopixelWrite(LED_PIN, 0, isDirectionClockwise ? 50 : 0, isDirectionClockwise ? 0 : 50);
-        isMotorRunning = true;
-
-        // 4. Ramp up from zero to target speed in the new direction.
-        rampMotor(0, speed, isDirectionClockwise);
+    else if (M5.BtnA.wasSingleClicked()) {
+        triggerReverse();
     }
     else if (M5.BtnA.wasDoubleClicked()) {
-        Serial.println("Double Click: Increasing speed smoothly.");
-        
-        int oldSpeed = speed;
-        int newSpeed = min(LOGICAL_MAX_SPEED, speed + LOGICAL_SPEED_INCREMENT);
-        speed = newSpeed; // Update the global target speed
-
-        Serial.print("New speed: ");
-        Serial.println(speed);
-
-        if (isMotorRunning) {
-            // Ramp smoothly from the old speed to the new speed.
-            rampMotor(oldSpeed, newSpeed, isDirectionClockwise);
-        }
+        triggerSpeedUp();
     }
+
+    // Yield to other tasks, especially the BLE stack, to prevent task starvation.
+    delay(1);
 }
