@@ -1,11 +1,14 @@
+// Note: The I2S parallel driver is not compatible with ESP32-S3 (AtomS3).
+// FastLED on S3 defaults to the RMT driver which is stable.
+// If you experience hangs, ensure you are using FastLED 3.6 or higher.
+#include <FastLED.h>
+
 #include <M5Unified.h>
 #include <Arduino.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <stdarg.h>
-
-#define LED_PIN 35
 
 // Atomic H-Driver Pin Definitions
 const int IN1_PIN = 6;
@@ -23,12 +26,19 @@ const int PHYSICAL_MIN_SPEED = 500; // The PWM duty cycle to overcome friction a
 
 const int LOGICAL_MAX_SPEED = 1000; // A linear scale for speed control
 const int LOGICAL_SPEED_INCREMENT = 50;
-const int LOGICAL_INITIAL_SPEED = 600; // The default logical speed
+const int LOGICAL_INITIAL_SPEED = 400; // The default logical speed
+const int LOGICAL_REVERSE_INTERMEDIATE_SPEED = 200; // The speed to ramp down to during a reversal
 
 // Ramping settings
 const int RAMP_STEP = 5;            // How much to change speed in each ramp step
-const int DEFAULT_RAMP_DURATION_MS = 2000; // Default duration for a full ramp
+const int DEFAULT_RAMP_DURATION_MS = 4000; // Default duration for a full ramp
 int currentRampDuration = DEFAULT_RAMP_DURATION_MS; // Variable to change ramp duration (in milliseconds)
+
+// --- LED Strip Settings ---
+#define ONBOARD_LED_PIN 35
+const int LED_STRIP_PIN = 36; // Grove Port Pin. Note: The other Grove pin is 37.
+const int NUM_LEDS = 30;      // Number of LEDs on your strip.
+const unsigned long LED_UPDATE_INTERVAL_MS = 200;
 
 // --- Remote Control ---
 // See the following for generating UUIDs:
@@ -51,8 +61,15 @@ unsigned long lastRampStepTime = 0;
 unsigned long rampStepDelay = 0;
 bool reverseAfterRampDown = false;
 
-bool isDirectionClockwise = true;
+bool isDirectionClockwise = false; //runs a bit quieter in this direction.
 bool isMotorRunning = false;
+
+// --- LED Strip Objects & State ---
+CRGB onboard_led[1];
+CRGB leds[NUM_LEDS];
+int led_position = 0;
+unsigned long last_led_strip_update = 0;
+
 
 // --- Throttled Logging --- DO NOT REMOVE THIS. It is useful to have. 
 // A helper function for timestamped logs that can be throttled to prevent flooding the serial port.
@@ -98,16 +115,9 @@ void setMotorDuty(int duty, bool clockwise) {
  * @return The calculated PWM duty cycle for the motor.
  */
 int mapSpeedToDuty(int logicalSpeed) {
-    if (logicalSpeed <= 0) {
-        return 0;
-    }
-    // Apply a quadratic easing function to make the ramp-up feel smoother.
-    // This compensates for the motor's non-linear response at low speeds.
-    float normalizedSpeed = (float)logicalSpeed / LOGICAL_MAX_SPEED;
-    float easedSpeed = normalizedSpeed * normalizedSpeed;
-
-    // Map the eased, normalized speed to the physical PWM duty range.
-    return PHYSICAL_MIN_SPEED + (easedSpeed * (PHYSICAL_MAX_SPEED - PHYSICAL_MIN_SPEED));
+    if (logicalSpeed <= 0) return 0;
+    // Map the logical speed (1-1000) to the physical PWM duty range (MIN to MAX)
+    return map(logicalSpeed, 1, LOGICAL_MAX_SPEED, PHYSICAL_MIN_SPEED, PHYSICAL_MAX_SPEED);
 }
 
 // --- State Change Functions (Non-Blocking) ---
@@ -117,7 +127,8 @@ void triggerStart() {
         targetLogicalSpeed = speedSetting;
         motorState = MOTOR_RAMPING_UP;
         isMotorRunning = true;
-        neopixelWrite(LED_PIN, 0, isDirectionClockwise ? 50 : 0, isDirectionClockwise ? 0 : 50);
+        onboard_led[0] = isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
+        FastLED.show();
     }
 }
 
@@ -125,7 +136,7 @@ void triggerReverse() {
     log_t("Triggering smooth reverse...");
     if (isMotorRunning) {
         reverseAfterRampDown = true;
-        targetLogicalSpeed = 0; // Set the immediate target to ramp down to zero
+        targetLogicalSpeed = LOGICAL_REVERSE_INTERMEDIATE_SPEED; // Ramp down to intermediate speed
         motorState = MOTOR_RAMPING_DOWN;
     } else {
         // If motor is stopped, just start it in the new direction
@@ -174,7 +185,8 @@ void triggerSetSpeed(int newSpeed) {
     targetLogicalSpeed = speedSetting;
     if (!isMotorRunning) {
         isMotorRunning = true;
-        neopixelWrite(LED_PIN, 0, isDirectionClockwise ? 50 : 0, isDirectionClockwise ? 0 : 50);
+        onboard_led[0] = isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
+        FastLED.show();
     }
 
     if (targetLogicalSpeed > currentLogicalSpeed) {
@@ -251,6 +263,12 @@ void setup() {
     ledcAttachPin(IN1_PIN, ledChannel1);
     ledcAttachPin(IN2_PIN, ledChannel2);
     
+    // --- FastLED Strip Setup ---
+    FastLED.addLeds<WS2812B, ONBOARD_LED_PIN, GRB>(onboard_led, 1);
+    FastLED.addLeds<WS2812B, LED_STRIP_PIN, GRB>(leds, NUM_LEDS);
+    FastLED.clear();
+    FastLED.show();
+
     // Initial State: Stopped
     ledcWrite(ledChannel1, 0);
     ledcWrite(ledChannel2, 0);
@@ -275,7 +293,8 @@ void setup() {
     pServer->getAdvertising()->start();
     log_t("BLE Server started. Waiting for a client connection...");
 
-    neopixelWrite(LED_PIN, 255, 255, 255);
+    onboard_led[0] = CRGB::White;
+    FastLED.show();
 
     // Start the motor running automatically on initialization.
     triggerStart();
@@ -285,6 +304,28 @@ void setup() {
 void loop() {
     //log_t("Loop start."); // Diagnostic: Check if the main loop is running. However, this bogs down all logging.
     M5.update(); // Required for button state updates
+
+    // --- LED Strip Animation ---
+    if (millis() - last_led_strip_update > LED_UPDATE_INTERVAL_MS) {
+        last_led_strip_update = millis();
+
+        // Turn off the old pixel by setting it to black
+        leds[led_position] = CRGB::Black;
+
+        // Move to the next pixel
+        led_position++;
+        if (led_position >= NUM_LEDS) {
+            led_position = 0;
+        }
+
+        // Set the new pixel and update the strip.
+        // NOTE: Based on initial observations, the strip appears to have a GRB
+        // color order. To display RED, we must send data in the GREEN channel
+        // of the CRGB struct.
+        leds[led_position] = CRGB::Green; // This should appear as RED on a GRB strip.
+        FastLED.show();
+    }
+
 
     // --- Non-Blocking Motor State Machine ---
     if (motorState != MOTOR_IDLE) {
@@ -311,9 +352,12 @@ void loop() {
 
             // Check if ramp is complete
             if (currentLogicalSpeed == targetLogicalSpeed) {
-                if (reverseAfterRampDown && currentLogicalSpeed == 0) {
+                // If a reversal was triggered, the first ramp-down to the intermediate speed is complete.
+                // Now, start the ramp-up in the other direction.
+                if (reverseAfterRampDown) {
                     isDirectionClockwise = !isDirectionClockwise;
-                    neopixelWrite(LED_PIN, 0, isDirectionClockwise ? 50 : 0, isDirectionClockwise ? 0 : 50);
+                    onboard_led[0] = isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
+                    FastLED.show();
                     targetLogicalSpeed = speedSetting; // Ramp up to the desired speed setting
                     motorState = MOTOR_RAMPING_UP;
                     reverseAfterRampDown = false;
@@ -323,7 +367,8 @@ void loop() {
                     if (currentLogicalSpeed == 0) {
                         isMotorRunning = false;
                         speedSetting = LOGICAL_INITIAL_SPEED; // Reset for next start
-                        neopixelWrite(LED_PIN, 50, 0, 0); // Red
+                        onboard_led[0] = CRGB(50, 0, 0); // Red
+                        FastLED.show();
                     }
                     log_t("Ramp complete.");
                 }
