@@ -27,7 +27,7 @@ const int LOGICAL_INITIAL_SPEED = 600; // The default logical speed
 
 // Ramping settings
 const int RAMP_STEP = 5;            // How much to change speed in each ramp step
-const int DEFAULT_RAMP_DURATION_MS = 4000; // Default duration for a full ramp
+const int DEFAULT_RAMP_DURATION_MS = 2000; // Default duration for a full ramp
 int currentRampDuration = DEFAULT_RAMP_DURATION_MS; // Variable to change ramp duration (in milliseconds)
 
 // --- Remote Control ---
@@ -35,8 +35,6 @@ int currentRampDuration = DEFAULT_RAMP_DURATION_MS; // Variable to change ramp d
 // https://www.uuidgenerator.net/
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define COMMAND_CHAR_UUID   "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-#define RAMP_CHAR_UUID      "c8a9353c-3893-43a8-9233-359c43530857"
-BLECharacteristic *pRampCharacteristic = nullptr;
 
 // --- Motor State Machine ---
 // This replaces the blocking delay() functions with a responsive state machine.
@@ -164,15 +162,25 @@ void triggerStop() {
 }
 
 void triggerSetSpeed(int newSpeed) {
-    speedSetting = constrain(newSpeed, 0, LOGICAL_MAX_SPEED);
+    // This function can now start the motor from a stopped state.
+    speedSetting = constrain(newSpeed, 0, LOGICAL_MAX_SPEED); // Allow setting speed to 0 to stop.
     log_t("Triggering set speed. New setting: %d", speedSetting);
-    if (isMotorRunning) {
-        targetLogicalSpeed = speedSetting;
-        if (targetLogicalSpeed > currentLogicalSpeed) {
-            motorState = MOTOR_RAMPING_UP;
-        } else if (targetLogicalSpeed < currentLogicalSpeed) {
-            motorState = MOTOR_RAMPING_DOWN;
-        }
+
+    if (speedSetting == 0) {
+        triggerStop();
+        return;
+    }
+
+    targetLogicalSpeed = speedSetting;
+    if (!isMotorRunning) {
+        isMotorRunning = true;
+        neopixelWrite(LED_PIN, 0, isDirectionClockwise ? 50 : 0, isDirectionClockwise ? 0 : 50);
+    }
+
+    if (targetLogicalSpeed > currentLogicalSpeed) {
+        motorState = MOTOR_RAMPING_UP;
+    } else if (targetLogicalSpeed < currentLogicalSpeed) {
+        motorState = MOTOR_RAMPING_DOWN;
     }
 }
 
@@ -194,14 +202,12 @@ class CommandCallback : public BLECharacteristicCallbacks {
             int val = atoi(value.substr(colon_pos + 1).c_str());
 
             if (cmd == "ms") {
+                val = constrain(val, 0, LOGICAL_MAX_SPEED);
                 triggerSetSpeed(val);
             } else if (cmd == "ramp") {
+                val = constrain(val, 0, 10000);
                 currentRampDuration = val;
                 log_t("Set Ramp Duration: %d", currentRampDuration);
-                // Also update the dedicated ramp characteristic's value
-                if (pRampCharacteristic != nullptr) {
-                    pRampCharacteristic->setValue(String(currentRampDuration).c_str());
-                }
             } else {
                 log_t("Unknown command prefix: %s", cmd.c_str());
             }
@@ -223,21 +229,6 @@ class CommandCallback : public BLECharacteristicCallbacks {
 
         // Update the characteristic's value so the last command can be read back.
         pCharacteristic->setValue(value);
-    }
-};
-
-class SettingCallback : public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *pCharacteristic) {
-        std::string uuid_str = pCharacteristic->getUUID().toString();
-        std::string value_str = pCharacteristic->getValue();
-        if (value_str.length() > 0) {
-            int value = atoi(value_str.c_str());
-
-            if (uuid_str == BLEUUID(RAMP_CHAR_UUID).toString()) {
-                currentRampDuration = value;
-                log_t("Set Ramp Duration: %d", currentRampDuration);
-            }
-        }
     }
 };
 
@@ -265,6 +256,8 @@ void setup() {
     ledcWrite(ledChannel2, 0);
     isMotorRunning = false;
 
+    speedSetting = LOGICAL_INITIAL_SPEED;
+
     // --- BLE Setup ---
     BLEDevice::init("Spiral Sculpture");
     BLEServer *pServer = BLEDevice::createServer();
@@ -278,23 +271,19 @@ void setup() {
     pCommandCharacteristic->setCallbacks(new CommandCallback());
     pCommandCharacteristic->setValue(" "); // Set an initial value
 
-    // Ramp Duration Characteristic
-    pRampCharacteristic = pService->createCharacteristic(
-                                         RAMP_CHAR_UUID,
-                                         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE
-                                       );
-    pRampCharacteristic->setValue(String(currentRampDuration).c_str());
-    pRampCharacteristic->setCallbacks(new SettingCallback());
-
     pService->start();
     pServer->getAdvertising()->start();
     log_t("BLE Server started. Waiting for a client connection...");
 
     neopixelWrite(LED_PIN, 255, 255, 255);
+
+    // Start the motor running automatically on initialization.
+    triggerStart();
 }
 
 
 void loop() {
+    //log_t("Loop start."); // Diagnostic: Check if the main loop is running. However, this bogs down all logging.
     M5.update(); // Required for button state updates
 
     // --- Non-Blocking Motor State Machine ---
