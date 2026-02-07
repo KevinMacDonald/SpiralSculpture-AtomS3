@@ -36,7 +36,7 @@ int currentRampDuration = DEFAULT_RAMP_DURATION_MS; // Variable to change ramp d
 
 // --- LED Strip Settings ---
 #define ONBOARD_LED_PIN 35
-const int LED_STRIP_PIN = 36; // Grove Port Pin. Note: The other Grove pin is 37.
+const int LED_STRIP_PIN = 2;  // Grove Port Pin (Yellow wire) on AtomS3. (G1 is Pin 1).
 const int NUM_LEDS = 30;      // Number of LEDs on your strip.
 const unsigned long LED_UPDATE_INTERVAL_MS = 200;
 
