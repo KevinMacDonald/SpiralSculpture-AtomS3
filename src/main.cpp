@@ -307,10 +307,16 @@ class CommandCallback : public BLECharacteristicCallbacks {
                 // cu - Cycle Up: Increases LED animation speed by 5% relative to motor speed.
                 ledSpeedMultiplier *= 1.05f;
                 log_t("Cycle speed UP 5%%. Multiplier: %.2f", ledSpeedMultiplier);
+                // cu - Cycle Up: Increases LED animation speed by 8% relative to motor speed.
+                ledSpeedMultiplier *= 1.08f;
+                log_t("Cycle speed UP 8%%. Multiplier: %.2f", ledSpeedMultiplier);
             } else if (value == "cd") {
                 // cd - Cycle Down: Decreases LED animation speed by 5% relative to motor speed.
                 ledSpeedMultiplier *= 0.95f;
                 log_t("Cycle speed DOWN 5%%. Multiplier: %.2f", ledSpeedMultiplier);
+                // cd - Cycle Down: Decreases LED animation speed by 8% relative to motor speed.
+                ledSpeedMultiplier *= 0.92f;
+                log_t("Cycle speed DOWN 8%%. Multiplier: %.2f", ledSpeedMultiplier);
             }
         } else {
             log_t("Invalid command format: %s", value.c_str());
