@@ -37,8 +37,7 @@ int currentRampDuration = DEFAULT_RAMP_DURATION_MS; // Variable to change ramp d
 // --- LED Strip Settings ---
 #define ONBOARD_LED_PIN 35
 const int LED_STRIP_PIN = 2;  // Grove Port Pin (Yellow wire) on AtomS3. (G1 is Pin 1).
-const int NUM_LEDS = 30;      // Number of LEDs on your strip.
-const unsigned long LED_UPDATE_INTERVAL_MS = 200;
+const int NUM_LEDS = 200;      // Number of LEDs on your strip.
 
 // --- Remote Control ---
 // See the following for generating UUIDs:
@@ -124,6 +123,7 @@ int mapSpeedToDuty(int logicalSpeed) {
 void triggerStart() {
     log_t("Triggering start...");
     if (!isMotorRunning) {
+        led_position = 0; // Start LED cycle at the beginning
         targetLogicalSpeed = speedSetting;
         motorState = MOTOR_RAMPING_UP;
         isMotorRunning = true;
@@ -184,6 +184,7 @@ void triggerSetSpeed(int newSpeed) {
 
     targetLogicalSpeed = speedSetting;
     if (!isMotorRunning) {
+        led_position = 0; // Start LED cycle at the beginning
         isMotorRunning = true;
         onboard_led[0] = isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
         FastLED.show();
@@ -306,24 +307,26 @@ void loop() {
     M5.update(); // Required for button state updates
 
     // --- LED Strip Animation ---
-    if (millis() - last_led_strip_update > LED_UPDATE_INTERVAL_MS) {
-        last_led_strip_update = millis();
+    // The LEDs only animate if the motor is logically running.
+    if (isMotorRunning && currentLogicalSpeed > 0) {
+        // Map logical speed to an update interval (ms).
+        // At max speed (1000), interval is 10ms. At intermediate (200), it's 50ms.
+        unsigned long dynamicInterval = 10000 / (unsigned long)currentLogicalSpeed;
 
-        // Turn off the old pixel by setting it to black
-        leds[led_position] = CRGB::Black;
+        if (millis() - last_led_strip_update > dynamicInterval) {
+            last_led_strip_update = millis();
+            
+            leds[led_position] = CRGB::Black;
 
-        // Move to the next pixel
-        led_position++;
-        if (led_position >= NUM_LEDS) {
-            led_position = 0;
+            if (isDirectionClockwise) {
+                led_position = (led_position + 1) % NUM_LEDS;
+            } else {
+                led_position = (led_position - 1 + NUM_LEDS) % NUM_LEDS;
+            }
+
+            leds[led_position] = CRGB::Red;
+            FastLED.show();
         }
-
-        // Set the new pixel and update the strip.
-        // NOTE: Based on initial observations, the strip appears to have a GRB
-        // color order. To display RED, we must send data in the GREEN channel
-        // of the CRGB struct.
-        leds[led_position] = CRGB::Green; // This should appear as RED on a GRB strip.
-        FastLED.show();
     }
 
 
