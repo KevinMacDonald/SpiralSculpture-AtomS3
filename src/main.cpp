@@ -67,6 +67,9 @@ bool isMotorRunning = false;
 CRGB onboard_led[1];
 CRGB leds[NUM_LEDS];
 int led_position = 0;
+uint8_t bgHue = 160;          // Default to Blue (160)
+uint8_t bgBrightness = 76;    // Default to 30% (76/255)
+float ledSpeedMultiplier = 1.0f; // Multiplier for LED cycle speed relative to motor
 unsigned long last_led_strip_update = 0;
 
 
@@ -137,8 +140,6 @@ void triggerStart() {
         updateRampTiming();
         motorState = MOTOR_RAMPING_UP;
         isMotorRunning = true;
-        onboard_led[0] = isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
-        FastLED.show();
     }
 }
 
@@ -201,8 +202,6 @@ void triggerSetSpeed(int newSpeed) {
     if (!isMotorRunning) {
         led_position = 0; // Start LED cycle at the beginning
         isMotorRunning = true;
-        onboard_led[0] = isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
-        FastLED.show();
     }
 
     if (targetLogicalSpeed > currentLogicalSpeed) {
@@ -213,6 +212,18 @@ void triggerSetSpeed(int newSpeed) {
 }
 
 // --- BLE Callbacks ---
+class MyServerCallbacks : public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+        log_t("BLE Client Connected");
+    };
+
+    void onDisconnect(BLEServer* pServer) {
+        log_t("BLE Client Disconnected. Restarting advertising...");
+        // Restart advertising so the device can be found again
+        pServer->getAdvertising()->start();
+    }
+};
+
 class CommandCallback : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         std::string value = pCharacteristic->getValue();
@@ -236,6 +247,19 @@ class CommandCallback : public BLECharacteristicCallbacks {
                 val = constrain(val, 0, 10000);
                 currentRampDuration = val;
                 log_t("Set Ramp Duration: %d", currentRampDuration);
+            } else if (cmd == "back_color") {
+                std::string params = value.substr(colon_pos + 1);
+                size_t comma_pos = params.find(',');
+                if (comma_pos != std::string::npos) {
+                    int h = atoi(params.substr(0, comma_pos).c_str());
+                    int b_pct = atoi(params.substr(comma_pos + 1).c_str());
+                    bgHue = (uint8_t)constrain(h, 0, 255);
+                    bgBrightness = (uint8_t)((constrain(b_pct, 0, 50) * 255) / 100);
+                    log_t("Background set to Hue: %d, Brightness: %d%% (%d)", bgHue, b_pct, bgBrightness);
+                }
+            } else if (cmd == "off") {
+                FastLED.clear(true);
+                log_t("Blackout triggered.");
             } else {
                 log_t("Unknown command prefix: %s", cmd.c_str());
             }
@@ -250,6 +274,15 @@ class CommandCallback : public BLECharacteristicCallbacks {
                 case 'u': triggerSpeedUp(); break;
                 case 'd': triggerSpeedDown(); break;
                 default: log_t("Unknown command: %c", cmd_char); break;
+            }
+        } else if (value.length() == 2) {
+            // Handle 2-character commands like "cu" and "cd"
+            if (value == "cu") {
+                ledSpeedMultiplier *= 1.05f;
+                log_t("Cycle speed UP 5%%. Multiplier: %.2f", ledSpeedMultiplier);
+            } else if (value == "cd") {
+                ledSpeedMultiplier *= 0.95f;
+                log_t("Cycle speed DOWN 5%%. Multiplier: %.2f", ledSpeedMultiplier);
             }
         } else {
             log_t("Invalid command format: %s", value.c_str());
@@ -282,8 +315,11 @@ void setup() {
     // --- FastLED Strip Setup ---
     FastLED.addLeds<WS2812B, ONBOARD_LED_PIN, GRB>(onboard_led, 1);
     FastLED.addLeds<WS2812B, LED_STRIP_PIN, GRB>(leds, NUM_LEDS);
-    FastLED.clear();
-    FastLED.show();
+    
+    // Stabilization delay and explicit clear to prevent startup glitches
+    delay(50);
+    FastLED.showColor(CRGB::Black);
+    FastLED.clear(true);
 
     // Initial State: Stopped
     ledcWrite(ledChannel1, 0);
@@ -295,6 +331,7 @@ void setup() {
     // --- BLE Setup ---
     BLEDevice::init("Spiral Sculpture");
     BLEServer *pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
     BLEService *pService = pServer->createService(SERVICE_UUID);
 
     // Command Characteristic
@@ -309,7 +346,7 @@ void setup() {
     pServer->getAdvertising()->start();
     log_t("BLE Server started. Waiting for a client connection...");
 
-    onboard_led[0] = CRGB::White;
+    onboard_led[0] = CRGB::Black;
     FastLED.show();
 
     // Start the motor running automatically on initialization.
@@ -324,19 +361,31 @@ void loop() {
     // --- LED Strip Animation ---
     // The LEDs only animate if the motor is logically running.
     if (isMotorRunning && currentLogicalSpeed > 0) {
-        // Linear interpolation between two points: (400, 19.4ms) and (1000, 4.433ms).
-        // We use a normalized fraction of the logical speed range for smoother scaling.
+        // Linear interpolation for baseline interval, then apply the user multiplier.
         float fraction = (float)currentLogicalSpeed / (float)LOGICAL_MAX_SPEED;
         float intervalMs = 28.8f - (fraction * 24.0f); // Scales from ~28.8ms at idle to ~4.8ms at max
-        unsigned long dynamicInterval = (unsigned long)max(1.0f, intervalMs);
+        unsigned long dynamicInterval = (unsigned long)max(1.0f, intervalMs / ledSpeedMultiplier);
 
         if (millis() - last_led_strip_update > dynamicInterval) {
             last_led_strip_update = millis();
             
-            // Dynamic Motion Blur: Higher speed = lower fade value = longer tail.
-            // At max speed (1000), fade is 30 (long tail). At low speed (200), fade is 140 (short tail).
+            // 1. Fade existing LEDs for the comet tail
             uint8_t fadeAmount = map(currentLogicalSpeed, 0, LOGICAL_MAX_SPEED, 180, 30);
             fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
+            
+            // 2. Apply dynamic background floor
+            CRGB bgColor = CHSV(bgHue, 255, bgBrightness);
+            
+            // Ensure the onboard LED stays off once running
+            onboard_led[0] = CRGB::Black;
+
+            // Apply background using a "Lighten" blend.
+            // This preserves the tail's color by taking the maximum of each channel.
+            for (int i = 0; i < NUM_LEDS; i++) {
+                leds[i].r = max(leds[i].r, bgColor.r);
+                leds[i].g = max(leds[i].g, bgColor.g);
+                leds[i].b = max(leds[i].b, bgColor.b);
+            }
 
             if (isDirectionClockwise) {
                 led_position = (led_position + 1) % NUM_LEDS;
@@ -344,9 +393,8 @@ void loop() {
                 led_position = (led_position - 1 + NUM_LEDS) % NUM_LEDS;
             }
 
-            // Directional Color: Match the strip color to the rotation direction.
-            // Clockwise = Green, Counter-Clockwise = Blue.
-            leds[led_position] = isDirectionClockwise ? CRGB::Green : CRGB::Blue;
+            // 3. Draw the head (Red in both directions)
+            leds[led_position] = CRGB::Red;
             FastLED.show();
         }
     }
@@ -374,8 +422,6 @@ void loop() {
                 // Now, start the ramp-up in the other direction.
                 if (reverseAfterRampDown) {
                     isDirectionClockwise = !isDirectionClockwise;
-                    onboard_led[0] = isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
-                    FastLED.show();
                     targetLogicalSpeed = speedSetting; // Ramp up to the desired speed setting
                     updateRampTiming();
                     motorState = MOTOR_RAMPING_UP;
@@ -386,8 +432,6 @@ void loop() {
                     if (currentLogicalSpeed == 0) {
                         isMotorRunning = false;
                         speedSetting = LOGICAL_INITIAL_SPEED; // Reset for next start
-                        onboard_led[0] = CRGB(50, 0, 0); // Red
-                        FastLED.show();
                     }
                     log_t("Ramp complete. Current Speed: %d", currentLogicalSpeed);
                 }
