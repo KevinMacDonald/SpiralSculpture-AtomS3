@@ -26,7 +26,7 @@ const int PHYSICAL_MIN_SPEED = 500; // The PWM duty cycle to overcome friction a
 
 const int LOGICAL_MAX_SPEED = 1000; // A linear scale for speed control
 const int LOGICAL_SPEED_INCREMENT = 50;
-const int LOGICAL_INITIAL_SPEED = 400; // The default logical speed
+const int LOGICAL_INITIAL_SPEED = 500; // The default logical speed
 const int LOGICAL_REVERSE_INTERMEDIATE_SPEED = 200; // The speed to ramp down to during a reversal
 
 // Ramping settings
@@ -73,7 +73,7 @@ unsigned long last_led_strip_update = 0;
 // --- Throttled Logging --- DO NOT REMOVE THIS. It is useful to have. 
 // A helper function for timestamped logs that can be throttled to prevent flooding the serial port.
 // Set MIN_LOG_GAP_MS to a value like 50 or 200 to enable throttling.
-unsigned long MIN_LOG_GAP_MS = 250; // Throttle logs to one line every 250ms for debugging.
+unsigned long MIN_LOG_GAP_MS = 50; // Reduced gap to allow command + action logs to appear.
 unsigned long lastLogTimestamp = 0;
 
 void log_t(const char* format, ...) {
@@ -119,12 +119,22 @@ int mapSpeedToDuty(int logicalSpeed) {
     return map(logicalSpeed, 1, LOGICAL_MAX_SPEED, PHYSICAL_MIN_SPEED, PHYSICAL_MAX_SPEED);
 }
 
+/**
+ * @brief Calculates the delay between ramp steps to achieve a specific duration.
+ */
+void updateRampTiming() {
+    int delta = abs(targetLogicalSpeed - currentLogicalSpeed);
+    int numSteps = (delta > 0) ? (delta / RAMP_STEP) : 1;
+    rampStepDelay = (numSteps > 0) ? (currentRampDuration / numSteps) : 1;
+}
+
 // --- State Change Functions (Non-Blocking) ---
 void triggerStart() {
     log_t("Triggering start...");
     if (!isMotorRunning) {
         led_position = 0; // Start LED cycle at the beginning
         targetLogicalSpeed = speedSetting;
+        updateRampTiming();
         motorState = MOTOR_RAMPING_UP;
         isMotorRunning = true;
         onboard_led[0] = isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
@@ -137,6 +147,7 @@ void triggerReverse() {
     if (isMotorRunning) {
         reverseAfterRampDown = true;
         targetLogicalSpeed = LOGICAL_REVERSE_INTERMEDIATE_SPEED; // Ramp down to intermediate speed
+        updateRampTiming();
         motorState = MOTOR_RAMPING_DOWN;
     } else {
         // If motor is stopped, just start it in the new direction
@@ -151,6 +162,7 @@ void triggerSpeedUp() {
     if (isMotorRunning)
     {
         targetLogicalSpeed = speedSetting;
+        updateRampTiming();
         motorState = MOTOR_RAMPING_UP;
     }
 }
@@ -161,6 +173,7 @@ void triggerSpeedDown() {
     if (isMotorRunning)
     {
         targetLogicalSpeed = speedSetting;
+        updateRampTiming();
         motorState = MOTOR_RAMPING_DOWN;
     }
 }
@@ -168,6 +181,7 @@ void triggerSpeedDown() {
 void triggerStop() {
     log_t("Triggering stop...");
     targetLogicalSpeed = 0;
+    updateRampTiming();
     motorState = MOTOR_RAMPING_DOWN;
     reverseAfterRampDown = false; // Ensure this is false for a normal stop
 }
@@ -183,6 +197,7 @@ void triggerSetSpeed(int newSpeed) {
     }
 
     targetLogicalSpeed = speedSetting;
+    updateRampTiming();
     if (!isMotorRunning) {
         led_position = 0; // Start LED cycle at the beginning
         isMotorRunning = true;
@@ -309,14 +324,19 @@ void loop() {
     // --- LED Strip Animation ---
     // The LEDs only animate if the motor is logically running.
     if (isMotorRunning && currentLogicalSpeed > 0) {
-        // Map logical speed to an update interval (ms).
-        // At max speed (1000), interval is 10ms. At intermediate (200), it's 50ms.
-        unsigned long dynamicInterval = 10000 / (unsigned long)currentLogicalSpeed;
+        // Linear interpolation between two points: (400, 19.4ms) and (1000, 4.433ms).
+        // We use a normalized fraction of the logical speed range for smoother scaling.
+        float fraction = (float)currentLogicalSpeed / (float)LOGICAL_MAX_SPEED;
+        float intervalMs = 28.8f - (fraction * 24.0f); // Scales from ~28.8ms at idle to ~4.8ms at max
+        unsigned long dynamicInterval = (unsigned long)max(1.0f, intervalMs);
 
         if (millis() - last_led_strip_update > dynamicInterval) {
             last_led_strip_update = millis();
             
-            leds[led_position] = CRGB::Black;
+            // Dynamic Motion Blur: Higher speed = lower fade value = longer tail.
+            // At max speed (1000), fade is 30 (long tail). At low speed (200), fade is 140 (short tail).
+            uint8_t fadeAmount = map(currentLogicalSpeed, 0, LOGICAL_MAX_SPEED, 180, 30);
+            fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
 
             if (isDirectionClockwise) {
                 led_position = (led_position + 1) % NUM_LEDS;
@@ -324,7 +344,9 @@ void loop() {
                 led_position = (led_position - 1 + NUM_LEDS) % NUM_LEDS;
             }
 
-            leds[led_position] = CRGB::Red;
+            // Directional Color: Match the strip color to the rotation direction.
+            // Clockwise = Green, Counter-Clockwise = Blue.
+            leds[led_position] = isDirectionClockwise ? CRGB::Green : CRGB::Blue;
             FastLED.show();
         }
     }
@@ -332,15 +354,8 @@ void loop() {
 
     // --- Non-Blocking Motor State Machine ---
     if (motorState != MOTOR_IDLE) {
-        // Calculate a constant step delay based on a full-range ramp to ensure a smooth, consistent ramp rate.
-        int fullRangeNumSteps = LOGICAL_MAX_SPEED / RAMP_STEP;
-        unsigned long constantRampStepDelay = (fullRangeNumSteps > 0) ? (currentRampDuration / fullRangeNumSteps) : 1;
-        if (constantRampStepDelay == 0) {
-            constantRampStepDelay = 1;
-        }
-
-        // Use the corrected, constant delay for the timer check.
-        if (millis() - lastRampStepTime > constantRampStepDelay) {
+        // Use the pre-calculated rampStepDelay for the timer check.
+        if (millis() - lastRampStepTime > rampStepDelay) {
             lastRampStepTime = millis();
 
             if (motorState == MOTOR_RAMPING_UP) {
@@ -362,6 +377,7 @@ void loop() {
                     onboard_led[0] = isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
                     FastLED.show();
                     targetLogicalSpeed = speedSetting; // Ramp up to the desired speed setting
+                    updateRampTiming();
                     motorState = MOTOR_RAMPING_UP;
                     reverseAfterRampDown = false;
                     isMotorRunning = true;
@@ -373,7 +389,7 @@ void loop() {
                         onboard_led[0] = CRGB(50, 0, 0); // Red
                         FastLED.show();
                     }
-                    log_t("Ramp complete.");
+                    log_t("Ramp complete. Current Speed: %d", currentLogicalSpeed);
                 }
             }
         }
