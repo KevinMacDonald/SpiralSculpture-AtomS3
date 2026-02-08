@@ -69,6 +69,9 @@ CRGB leds[NUM_LEDS];
 int led_position = 0;
 uint8_t bgHue = 160;          // Default to Blue (160)
 uint8_t bgBrightness = 76;    // Default to 30% (76/255)
+uint8_t cometHue = 0;         // Default to Red (0)
+int cometTailLength = 10;     // Default tail length
+int cometCount = 1;           // Default number of moving points
 float ledSpeedMultiplier = 1.0f; // Multiplier for LED cycle speed relative to motor
 unsigned long last_led_strip_update = 0;
 
@@ -236,18 +239,21 @@ class CommandCallback : public BLECharacteristicCallbacks {
         size_t colon_pos = value.find(':');
 
         if (colon_pos != std::string::npos) {
-            // Command with a value, e.g., "ms:800" or "ramp:4000"
+            // --- Commands with values (Format: "cmd:value" or "cmd:val1,val2") ---
             std::string cmd = value.substr(0, colon_pos);
             int val = atoi(value.substr(colon_pos + 1).c_str());
 
             if (cmd == "ms") {
+                // ms:XXX - Sets the motor's logical speed (0-1000).
                 val = constrain(val, 0, LOGICAL_MAX_SPEED);
                 triggerSetSpeed(val);
             } else if (cmd == "ramp") {
+                // ramp:XXXX - Sets the duration (in ms) for a full speed ramp (0 to 1000).
                 val = constrain(val, 0, 10000);
                 currentRampDuration = val;
                 log_t("Set Ramp Duration: %d", currentRampDuration);
             } else if (cmd == "back_color") {
+                // back_color:XXX,YY - Sets background Hue (0-255) and Brightness % (0-50).
                 std::string params = value.substr(colon_pos + 1);
                 size_t comma_pos = params.find(',');
                 if (comma_pos != std::string::npos) {
@@ -257,7 +263,27 @@ class CommandCallback : public BLECharacteristicCallbacks {
                     bgBrightness = (uint8_t)((constrain(b_pct, 0, 50) * 255) / 100);
                     log_t("Background set to Hue: %d, Brightness: %d%% (%d)", bgHue, b_pct, bgBrightness);
                 }
+            } else if (cmd == "tails") {
+                // tails:XXX,YY,ZZ - Sets Comet Hue (0-255), Tail Length (LEDs), and Comet Count.
+                // Safety: Ignored if total lit LEDs (Count * Length) exceeds 80% of the strip.
+                std::string params = value.substr(colon_pos + 1);
+                size_t comma1 = params.find(',');
+                size_t comma2 = params.find(',', comma1 + 1);
+                if (comma1 != std::string::npos && comma2 != std::string::npos) {
+                    int h = atoi(params.substr(0, comma1).c_str());
+                    int l = atoi(params.substr(comma1 + 1, comma2 - (comma1 + 1)).c_str());
+                    int c = atoi(params.substr(comma2 + 1).c_str());
+                    if (c * l <= NUM_LEDS * 0.8) {
+                        cometHue = (uint8_t)constrain(h, 0, 255);
+                        cometTailLength = max(1, l);
+                        cometCount = max(1, c);
+                        log_t("Tails set: Hue %d, Length %d, Count %d", cometHue, cometTailLength, cometCount);
+                    } else {
+                        log_t("Tails command ignored: exceeds 80%% of strip.");
+                    }
+                }
             } else if (cmd == "off") {
+                // off: - Triggers an immediate blackout of all LEDs.
                 FastLED.clear(true);
                 log_t("Blackout triggered.");
             } else {
@@ -265,22 +291,24 @@ class CommandCallback : public BLECharacteristicCallbacks {
             }
 
         } else if (value.length() == 1) {
-            // Single-letter command
+            // --- Single-letter Motor Commands ---
             char cmd_char = value[0];
             switch(cmd_char) {
-                case 'g': triggerStart(); break;
-                case 's': triggerStop(); break;
-                case 'r': triggerReverse(); break;
-                case 'u': triggerSpeedUp(); break;
-                case 'd': triggerSpeedDown(); break;
+                case 'g': triggerStart(); break;      // g - Go: Start motor/ramping up.
+                case 's': triggerStop(); break;       // s - Stop: Ramp motor down to zero.
+                case 'r': triggerReverse(); break;    // r - Reverse: Smoothly ramp down, flip direction, ramp up.
+                case 'u': triggerSpeedUp(); break;    // u - Up: Increase motor speed setting by increment.
+                case 'd': triggerSpeedDown(); break;  // d - Down: Decrease motor speed setting by increment.
                 default: log_t("Unknown command: %c", cmd_char); break;
             }
         } else if (value.length() == 2) {
-            // Handle 2-character commands like "cu" and "cd"
+            // --- 2-character LED Cycle Commands ---
             if (value == "cu") {
+                // cu - Cycle Up: Increases LED animation speed by 5% relative to motor speed.
                 ledSpeedMultiplier *= 1.05f;
                 log_t("Cycle speed UP 5%%. Multiplier: %.2f", ledSpeedMultiplier);
             } else if (value == "cd") {
+                // cd - Cycle Down: Decreases LED animation speed by 5% relative to motor speed.
                 ledSpeedMultiplier *= 0.95f;
                 log_t("Cycle speed DOWN 5%%. Multiplier: %.2f", ledSpeedMultiplier);
             }
@@ -369,8 +397,8 @@ void loop() {
         if (millis() - last_led_strip_update > dynamicInterval) {
             last_led_strip_update = millis();
             
-            // 1. Fade existing LEDs for the comet tail
-            uint8_t fadeAmount = map(currentLogicalSpeed, 0, LOGICAL_MAX_SPEED, 180, 30);
+            // 1. Fade existing LEDs for the comet tail based on requested length
+            uint8_t fadeAmount = 255 / cometTailLength;
             fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
             
             // 2. Apply dynamic background floor
@@ -393,8 +421,11 @@ void loop() {
                 led_position = (led_position - 1 + NUM_LEDS) % NUM_LEDS;
             }
 
-            // 3. Draw the head (Red in both directions)
-            leds[led_position] = CRGB::Red;
+            // 3. Draw the heads (spaced evenly)
+            for (int j = 0; j < cometCount; j++) {
+                int pos = (led_position + j * (NUM_LEDS / cometCount)) % NUM_LEDS;
+                leds[pos] = CHSV(cometHue, 255, 255);
+            }
             FastLED.show();
         }
     }
