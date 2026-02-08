@@ -283,13 +283,21 @@ class CommandCallback : public BLECharacteristicCallbacks {
                     }
                 }
             } else if (cmd == "off") {
-                // off: - Triggers an immediate blackout of all LEDs.
+                // off: - Ramps down the motor and kills LED animation immediately.
+                log_t("Off command: Ramping down motor and killing LEDs.");
+                triggerStop();
+                isMotorRunning = false;
                 FastLED.clear(true);
-                log_t("Blackout triggered.");
             } else {
                 log_t("Unknown command prefix: %s", cmd.c_str());
             }
 
+        } else if (value == "off") {
+            // Handle "off" without a colon
+            log_t("Off command: Ramping down motor and killing LEDs.");
+            triggerStop();
+            isMotorRunning = false;
+            FastLED.clear(true);
         } else if (value.length() == 1) {
             // --- Single-letter Motor Commands ---
             char cmd_char = value[0];
@@ -304,16 +312,10 @@ class CommandCallback : public BLECharacteristicCallbacks {
         } else if (value.length() == 2) {
             // --- 2-character LED Cycle Commands ---
             if (value == "cu") {
-                // cu - Cycle Up: Increases LED animation speed by 5% relative to motor speed.
-                ledSpeedMultiplier *= 1.05f;
-                log_t("Cycle speed UP 5%%. Multiplier: %.2f", ledSpeedMultiplier);
                 // cu - Cycle Up: Increases LED animation speed by 8% relative to motor speed.
                 ledSpeedMultiplier *= 1.08f;
                 log_t("Cycle speed UP 8%%. Multiplier: %.2f", ledSpeedMultiplier);
             } else if (value == "cd") {
-                // cd - Cycle Down: Decreases LED animation speed by 5% relative to motor speed.
-                ledSpeedMultiplier *= 0.95f;
-                log_t("Cycle speed DOWN 5%%. Multiplier: %.2f", ledSpeedMultiplier);
                 // cd - Cycle Down: Decreases LED animation speed by 8% relative to motor speed.
                 ledSpeedMultiplier *= 0.92f;
                 log_t("Cycle speed DOWN 8%%. Multiplier: %.2f", ledSpeedMultiplier);
