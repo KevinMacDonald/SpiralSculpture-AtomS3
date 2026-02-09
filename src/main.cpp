@@ -38,6 +38,8 @@ int currentRampDuration = DEFAULT_RAMP_DURATION_MS; // Variable to change ramp d
 #define ONBOARD_LED_PIN 35
 const int LED_STRIP_PIN = 2;  // Grove Port Pin (Yellow wire) on AtomS3. (G1 is Pin 1).
 const int NUM_LEDS = 198;      // Number of LEDs on your strip.
+const int VIRTUAL_GAP = 25;    // Non-existent pixels to match mechanical rotation
+const int LOGICAL_NUM_LEDS = NUM_LEDS + VIRTUAL_GAP;
 
 // --- Remote Control ---
 // See the following for generating UUIDs:
@@ -274,7 +276,7 @@ class CommandCallback : public BLECharacteristicCallbacks {
                     int h = atoi(params.substr(0, comma1).c_str());
                     int l = atoi(params.substr(comma1 + 1, comma2 - (comma1 + 1)).c_str());
                     int c = atoi(params.substr(comma2 + 1).c_str());
-                    if (c * l <= NUM_LEDS * 0.8) {
+                    if (c * l <= LOGICAL_NUM_LEDS * 0.8) {
                         cometHue = (uint8_t)constrain(h, 0, 255);
                         cometTailLength = max(1, l);
                         cometCount = max(1, c);
@@ -432,15 +434,18 @@ void loop() {
             }
 
             if (isDirectionClockwise) {
-                led_position = (led_position - 1 + NUM_LEDS) % NUM_LEDS;
+                led_position = (led_position - 1 + LOGICAL_NUM_LEDS) % LOGICAL_NUM_LEDS;
             } else {
-                led_position = (led_position + 1) % NUM_LEDS;
+                led_position = (led_position + 1) % LOGICAL_NUM_LEDS;
             }
 
             // 3. Draw the heads (spaced evenly)
             for (int j = 0; j < cometCount; j++) {
-                int pos = (led_position + j * (NUM_LEDS / cometCount)) % NUM_LEDS;
-                leds[pos] = CHSV(cometHue, 255, 255);
+                int pos = (led_position + j * (LOGICAL_NUM_LEDS / cometCount)) % LOGICAL_NUM_LEDS;
+                // Only draw if the logical position exists on the physical strip
+                if (pos < NUM_LEDS) {
+                    leds[pos] = CHSV(cometHue, 255, 255);
+                }
             }
             FastLED.show();
         }
