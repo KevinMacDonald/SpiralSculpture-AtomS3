@@ -381,7 +381,7 @@ void setup() {
     pServer->getAdvertising()->start();
     log_t("BLE Server started. Waiting for a client connection...");
 
-    onboard_led[0] = CRGB::Black;
+    onboard_led[0] = CRGB(50, 0, 0); // Dim Red to show power is on and motor is stopped
     FastLED.show();
 
     // Start the motor running automatically on initialization.
@@ -420,8 +420,8 @@ void loop() {
             // 2. Apply dynamic background floor
             CRGB bgColor = CHSV(bgHue, 255, bgBrightness);
             
-            // Ensure the onboard LED stays off once running
-            onboard_led[0] = CRGB::Black;
+            // Update onboard LED to show direction: Green for CW, Blue for CCW
+            onboard_led[0] = isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
 
             // Apply background using a "Lighten" blend.
             // This preserves the tail's color by taking the maximum of each channel.
@@ -479,6 +479,8 @@ void loop() {
                     if (currentLogicalSpeed == 0) {
                         isMotorRunning = false;
                         speedSetting = LOGICAL_INITIAL_SPEED; // Reset for next start
+                        onboard_led[0] = CRGB(50, 0, 0); // Red when stopped
+                        FastLED.show();
                     }
                     log_t("Ramp complete. Current Speed: %d", currentLogicalSpeed);
                 }
