@@ -26,7 +26,7 @@ const int PHYSICAL_MIN_SPEED = 500; // The PWM duty cycle to overcome friction a
 
 const int LOGICAL_MAX_SPEED = 1000; // A linear scale for speed control
 const int LOGICAL_SPEED_INCREMENT = 50;
-const int LOGICAL_INITIAL_SPEED = 500; // The default logical speed
+const int LOGICAL_INITIAL_SPEED = 400; // The default logical speed
 const int LOGICAL_REVERSE_INTERMEDIATE_SPEED = 200; // The speed to ramp down to during a reversal
 
 // Ramping settings
@@ -37,7 +37,7 @@ int currentRampDuration = DEFAULT_RAMP_DURATION_MS; // Variable to change ramp d
 // --- LED Strip Settings ---
 #define ONBOARD_LED_PIN 35
 const int LED_STRIP_PIN = 2;  // Grove Port Pin (Yellow wire) on AtomS3. (G1 is Pin 1).
-const int NUM_LEDS = 200;      // Number of LEDs on your strip.
+const int NUM_LEDS = 198;      // Number of LEDs on your strip.
 
 // --- Remote Control ---
 // See the following for generating UUIDs:
@@ -60,6 +60,7 @@ unsigned long lastRampStepTime = 0;
 unsigned long rampStepDelay = 0;
 bool reverseAfterRampDown = false;
 
+bool pendingOff = false; // Flag to handle "off" command safely in the main loop
 bool isDirectionClockwise = false; //runs a bit quieter in this direction.
 bool isMotorRunning = false;
 
@@ -71,8 +72,8 @@ uint8_t bgHue = 160;          // Default to Blue (160)
 uint8_t bgBrightness = 76;    // Default to 30% (76/255)
 uint8_t cometHue = 0;         // Default to Red (0)
 int cometTailLength = 10;     // Default tail length
-int cometCount = 1;           // Default number of moving points
-float ledSpeedMultiplier = 1.0f; // Multiplier for LED cycle speed relative to motor
+int cometCount = 5;           // Default number of moving points
+float ledSpeedMultiplier = 0.75f; // Multiplier for LED cycle speed relative to motor
 unsigned long last_led_strip_update = 0;
 
 
@@ -284,20 +285,14 @@ class CommandCallback : public BLECharacteristicCallbacks {
                 }
             } else if (cmd == "off") {
                 // off: - Ramps down the motor and kills LED animation immediately.
-                log_t("Off command: Ramping down motor and killing LEDs.");
-                triggerStop();
-                isMotorRunning = false;
-                FastLED.clear(true);
+                pendingOff = true;
             } else {
                 log_t("Unknown command prefix: %s", cmd.c_str());
             }
 
         } else if (value == "off") {
             // Handle "off" without a colon
-            log_t("Off command: Ramping down motor and killing LEDs.");
-            triggerStop();
-            isMotorRunning = false;
-            FastLED.clear(true);
+            pendingOff = true;
         } else if (value.length() == 1) {
             // --- Single-letter Motor Commands ---
             char cmd_char = value[0];
@@ -334,11 +329,13 @@ void setup() {
     cfg.serial_baudrate = 115200;
     M5.begin(cfg);
 
+    // Force LED pin LOW immediately to prevent floating-point startup flickers
+    pinMode(LED_STRIP_PIN, OUTPUT);
+    digitalWrite(LED_STRIP_PIN, LOW);
+
     // Reset pins to ensure no other peripheral is holding them
     gpio_reset_pin((gpio_num_t)IN1_PIN);
     gpio_reset_pin((gpio_num_t)IN2_PIN);
-
-    delay(1000); // Give serial monitor time to connect
 
     log_t("System Initialized");
 
@@ -351,11 +348,13 @@ void setup() {
     // --- FastLED Strip Setup ---
     FastLED.addLeds<WS2812B, ONBOARD_LED_PIN, GRB>(onboard_led, 1);
     FastLED.addLeds<WS2812B, LED_STRIP_PIN, GRB>(leds, NUM_LEDS);
-    
-    // Stabilization delay and explicit clear to prevent startup glitches
-    delay(50);
-    FastLED.showColor(CRGB::Black);
-    FastLED.clear(true);
+
+    // Set a safety power limit (5V, 500mA is safe for AtomS3 internal regulator)
+    FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);
+    FastLED.setBrightness(255);
+
+    // Immediate blackout to overwrite any RMT initialization glitches
+    FastLED.showColor(CRGB::Black); 
 
     // Initial State: Stopped
     ledcWrite(ledChannel1, 0);
@@ -394,6 +393,15 @@ void loop() {
     //log_t("Loop start."); // Diagnostic: Check if the main loop is running. However, this bogs down all logging.
     M5.update(); // Required for button state updates
 
+    // --- Handle Pending Off Command ---
+    if (pendingOff) {
+        log_t("Processing Off command...");
+        triggerStop();         // Start motor ramp down
+        isMotorRunning = false; // Stop LED animation logic
+        FastLED.clear(true);    // Blackout all LEDs immediately
+        pendingOff = false;
+    }
+
     // --- LED Strip Animation ---
     // The LEDs only animate if the motor is logically running.
     if (isMotorRunning && currentLogicalSpeed > 0) {
@@ -424,9 +432,9 @@ void loop() {
             }
 
             if (isDirectionClockwise) {
-                led_position = (led_position + 1) % NUM_LEDS;
-            } else {
                 led_position = (led_position - 1 + NUM_LEDS) % NUM_LEDS;
+            } else {
+                led_position = (led_position + 1) % NUM_LEDS;
             }
 
             // 3. Draw the heads (spaced evenly)
