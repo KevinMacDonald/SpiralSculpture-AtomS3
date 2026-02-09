@@ -66,6 +66,19 @@ bool pendingOff = false; // Flag to handle "off" command safely in the main loop
 bool isDirectionClockwise = false; //runs a bit quieter in this direction.
 bool isMotorRunning = false;
 
+// --- Speed Sync Lookup Table ---
+struct SpeedSyncPair {
+    int logicalSpeed;
+    int revTimeMs;
+};
+
+const SpeedSyncPair speedSyncTable[] = {
+    { 400, 5200 },
+    { 700, 2096 },
+    { 1000, 1250 }
+};
+const int speedSyncTableSize = sizeof(speedSyncTable) / sizeof(SpeedSyncPair);
+
 // --- LED Strip Objects & State ---
 CRGB onboard_led[1];
 CRGB leds[NUM_LEDS];
@@ -75,7 +88,7 @@ uint8_t bgBrightness = 76;    // Default to 30% (76/255)
 uint8_t cometHue = 0;         // Default to Red (0)
 int cometTailLength = 10;     // Default tail length
 int cometCount = 5;           // Default number of moving points
-float ledSpeedMultiplier = 0.75f; // Multiplier for LED cycle speed relative to motor
+float ledIntervalMs = 20.0f;  // Absolute time between LED steps in ms
 unsigned long last_led_strip_update = 0;
 
 
@@ -96,6 +109,41 @@ void log_t(const char* format, ...) {
         Serial.printf("%lu ms: %s\n", now, buf);
         lastLogTimestamp = now;
     }
+}
+
+/**
+ * @brief Looks up the target speed in the sync table and updates the LED interval.
+ * If no match is found, it falls back to the interpolated calculation method.
+ */
+void applySpeedSyncLookup(int speed) {
+    if (speedSyncTableSize < 2) return;
+
+    float targetRevTime = 0;
+
+    if (speed <= speedSyncTable[0].logicalSpeed) {
+        // Linear extrapolation using the first segment
+        float m = (float)(speedSyncTable[1].revTimeMs - speedSyncTable[0].revTimeMs) /
+                  (float)(speedSyncTable[1].logicalSpeed - speedSyncTable[0].logicalSpeed);
+        targetRevTime = speedSyncTable[0].revTimeMs + m * (speed - speedSyncTable[0].logicalSpeed);
+    } else if (speed >= speedSyncTable[speedSyncTableSize - 1].logicalSpeed) {
+        // Linear extrapolation using the last segment
+        int last = speedSyncTableSize - 1;
+        float m = (float)(speedSyncTable[last].revTimeMs - speedSyncTable[last-1].revTimeMs) /
+                  (float)(speedSyncTable[last].logicalSpeed - speedSyncTable[last-1].logicalSpeed);
+        targetRevTime = speedSyncTable[last].revTimeMs + m * (speed - speedSyncTable[last].logicalSpeed);
+    } else {
+        // Piecewise linear interpolation
+        for (int i = 0; i < speedSyncTableSize - 1; i++) {
+            if (speed >= speedSyncTable[i].logicalSpeed && speed <= speedSyncTable[i+1].logicalSpeed) {
+                float fraction = (float)(speed - speedSyncTable[i].logicalSpeed) /
+                                 (float)(speedSyncTable[i+1].logicalSpeed - speedSyncTable[i].logicalSpeed);
+                targetRevTime = speedSyncTable[i].revTimeMs + fraction * (speedSyncTable[i+1].revTimeMs - speedSyncTable[i].revTimeMs);
+                break;
+            }
+        }
+    }
+
+    ledIntervalMs = targetRevTime / (float)LOGICAL_NUM_LEDS;
 }
 
 // --- Core Motor & Mapping Functions ---
@@ -143,6 +191,7 @@ void triggerStart() {
     if (!isMotorRunning) {
         led_position = 0; // Start LED cycle at the beginning
         targetLogicalSpeed = speedSetting;
+        applySpeedSyncLookup(targetLogicalSpeed);
         updateRampTiming();
         motorState = MOTOR_RAMPING_UP;
         isMotorRunning = true;
@@ -154,6 +203,7 @@ void triggerReverse() {
     if (isMotorRunning) {
         reverseAfterRampDown = true;
         targetLogicalSpeed = LOGICAL_REVERSE_INTERMEDIATE_SPEED; // Ramp down to intermediate speed
+        applySpeedSyncLookup(targetLogicalSpeed);
         updateRampTiming();
         motorState = MOTOR_RAMPING_DOWN;
     } else {
@@ -169,6 +219,7 @@ void triggerSpeedUp() {
     if (isMotorRunning)
     {
         targetLogicalSpeed = speedSetting;
+        applySpeedSyncLookup(targetLogicalSpeed);
         updateRampTiming();
         motorState = MOTOR_RAMPING_UP;
     }
@@ -180,6 +231,7 @@ void triggerSpeedDown() {
     if (isMotorRunning)
     {
         targetLogicalSpeed = speedSetting;
+        applySpeedSyncLookup(targetLogicalSpeed);
         updateRampTiming();
         motorState = MOTOR_RAMPING_DOWN;
     }
@@ -204,6 +256,7 @@ void triggerSetSpeed(int newSpeed) {
     }
 
     targetLogicalSpeed = speedSetting;
+    applySpeedSyncLookup(targetLogicalSpeed);
     updateRampTiming();
     if (!isMotorRunning) {
         led_position = 0; // Start LED cycle at the beginning
@@ -285,6 +338,12 @@ class CommandCallback : public BLECharacteristicCallbacks {
                         log_t("Tails command ignored: exceeds 80%% of strip.");
                     }
                 }
+            } else if (cmd == "c") {
+                // c:XXXX - Sets the absolute time for one full revolution of the LED cycle in ms.
+                if (val > 0) {
+                    ledIntervalMs = (float)val / (float)LOGICAL_NUM_LEDS;
+                    log_t("LED Revolution time set to %d ms. Step interval: %.2f ms", val, ledIntervalMs);
+                }
             } else if (cmd == "off") {
                 // off: - Ramps down the motor and kills LED animation immediately.
                 pendingOff = true;
@@ -309,13 +368,13 @@ class CommandCallback : public BLECharacteristicCallbacks {
         } else if (value.length() == 2) {
             // --- 2-character LED Cycle Commands ---
             if (value == "cu") {
-                // cu - Cycle Up: Increases LED animation speed by 8% relative to motor speed.
-                ledSpeedMultiplier *= 1.08f;
-                log_t("Cycle speed UP 8%%. Multiplier: %.2f", ledSpeedMultiplier);
+                // cu - Cycle Up: Increases LED animation speed by 8% (decreases interval).
+                ledIntervalMs *= 0.92f;
+                log_t("LED Cycle speed UP 8%%. Interval: %.2f ms", ledIntervalMs);
             } else if (value == "cd") {
-                // cd - Cycle Down: Decreases LED animation speed by 8% relative to motor speed.
-                ledSpeedMultiplier *= 0.92f;
-                log_t("Cycle speed DOWN 8%%. Multiplier: %.2f", ledSpeedMultiplier);
+                // cd - Cycle Down: Decreases LED animation speed by 8% (increases interval).
+                ledIntervalMs *= 1.08f;
+                log_t("LED Cycle speed DOWN 8%%. Interval: %.2f ms", ledIntervalMs);
             }
         } else {
             log_t("Invalid command format: %s", value.c_str());
@@ -407,10 +466,8 @@ void loop() {
     // --- LED Strip Animation ---
     // The LEDs only animate if the motor is logically running.
     if (isMotorRunning && currentLogicalSpeed > 0) {
-        // Linear interpolation for baseline interval, then apply the user multiplier.
-        float fraction = (float)currentLogicalSpeed / (float)LOGICAL_MAX_SPEED;
-        float intervalMs = 28.8f - (fraction * 24.0f); // Scales from ~28.8ms at idle to ~4.8ms at max
-        unsigned long dynamicInterval = (unsigned long)max(1.0f, intervalMs / ledSpeedMultiplier);
+        // Use the absolute interval set by the user.
+        unsigned long dynamicInterval = (unsigned long)max(1.0f, ledIntervalMs);
 
         if (millis() - last_led_strip_update > dynamicInterval) {
             last_led_strip_update = millis();
@@ -468,6 +525,9 @@ void loop() {
 
             setMotorDuty(mapSpeedToDuty(currentLogicalSpeed), isDirectionClockwise);
 
+            // Update LED timing to match the current physical speed during the ramp
+            applySpeedSyncLookup(currentLogicalSpeed);
+
             // Check if ramp is complete
             if (currentLogicalSpeed == targetLogicalSpeed) {
                 // If a reversal was triggered, the first ramp-down to the intermediate speed is complete.
@@ -475,6 +535,7 @@ void loop() {
                 if (reverseAfterRampDown) {
                     isDirectionClockwise = !isDirectionClockwise;
                     targetLogicalSpeed = speedSetting; // Ramp up to the desired speed setting
+                    applySpeedSyncLookup(targetLogicalSpeed);
                     updateRampTiming();
                     motorState = MOTOR_RAMPING_UP;
                     reverseAfterRampDown = false;
