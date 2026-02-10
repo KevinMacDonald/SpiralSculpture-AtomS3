@@ -372,8 +372,8 @@ class CommandCallback : public BLECharacteristicCallbacks {
                         log_t("Tails command ignored: exceeds 80%% of strip.");
                     }
                 }
-            } else if (cmd == "c") {
-                // c:XXXX - Sets the absolute time for one full revolution of the LED cycle in ms.
+            } else if (cmd == "led_cycle_time") {
+                // led_cycle_time:XXXX - Sets the absolute time for one full revolution of the LED cycle in ms.
                 if (val > 0) {
                     __isManualLedInterval = true;
                     __manualLedIntervalMs = (float)val / (float)__LOGICAL_NUM_LEDS;
@@ -391,34 +391,42 @@ class CommandCallback : public BLECharacteristicCallbacks {
         } else if (value == "off") {
             // Handle "off" without a colon
             __pendingOff = true;
-        } else if (value.length() == 1) {
-            // --- Single-letter Motor Commands ---
-            char cmd_char = value[0];
-            switch(cmd_char) {
-                case 'g': triggerStart(); break;      // g - Go: Start motor/ramping up.
-                case 's': triggerStop(); break;       // s - Stop: Ramp motor down to zero.
-                case 'r': triggerReverse(); break;    // r - Reverse: Smoothly ramp down, flip direction, ramp up.
-                case 'u': triggerSpeedUp(); break;    // u - Up: Increase motor speed setting by increment.
-                case 'd': triggerSpeedDown(); break;  // d - Down: Decrease motor speed setting by increment.
-                default: log_t("Unknown command: %c", cmd_char); break;
-            }
-        } else if (value.length() == 2) {
-            // --- 2-character LED Cycle Commands ---
-            if (value == "cu") {
-                // cu - Cycle Up: Increases LED animation speed by 8% (decreases interval).
-                __isManualLedInterval = true;
-                __ledIntervalMs *= 0.92f;
-                __manualLedIntervalMs = __ledIntervalMs;
-                __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
-                log_t("LED Cycle speed UP 8%% (Manual). Interval: %.2f ms", __ledIntervalMs);
-            } else if (value == "cd") {
-                // cd - Cycle Down: Decreases LED animation speed by 8% (increases interval).
-                __isManualLedInterval = true;
-                __ledIntervalMs *= 1.08f;
-                __manualLedIntervalMs = __ledIntervalMs;
-                __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
-                log_t("LED Cycle speed DOWN 8%% (Manual). Interval: %.2f ms", __ledIntervalMs);
-            }
+        } else if (value == "motor_start") {
+            triggerStart();
+        } else if (value == "motor_stop") {
+            triggerStop();
+        } else if (value == "start_defaults") {
+            // Reset all parameters to setup() defaults
+            __speedSetting = __LOGICAL_INITIAL_SPEED;
+            __masterBrightness = 255;
+            __bgHue = 160;
+            __bgBrightness = 76;
+            __cometHue = 0;
+            __cometTailLength = 10;
+            __cometCount = 3;
+            __isManualLedInterval = false;
+            __currentRampDuration = __DEFAULT_RAMP_DURATION_MS;
+            FastLED.setBrightness(__masterBrightness);
+            triggerSetSpeed(__speedSetting);
+            log_t("System reset to defaults and started.");
+        } else if (value == "reverse") {
+            triggerReverse();
+        } else if (value == "speed_up") {
+            triggerSpeedUp();
+        } else if (value == "speed_down") {
+            triggerSpeedDown();
+        } else if (value == "led_cycle_up") {
+            __isManualLedInterval = true;
+            __ledIntervalMs *= 0.92f;
+            __manualLedIntervalMs = __ledIntervalMs;
+            __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
+            log_t("LED Cycle speed UP 8%% (Manual). Interval: %.2f ms", __ledIntervalMs);
+        } else if (value == "led_cycle_down") {
+            __isManualLedInterval = true;
+            __ledIntervalMs *= 1.08f;
+            __manualLedIntervalMs = __ledIntervalMs;
+            __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
+            log_t("LED Cycle speed DOWN 8%% (Manual). Interval: %.2f ms", __ledIntervalMs);
         } else {
             log_t("Invalid command format: %s", value.c_str());
         }
