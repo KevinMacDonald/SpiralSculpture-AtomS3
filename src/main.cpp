@@ -11,60 +11,60 @@
 #include <stdarg.h>
 
 // Atomic H-Driver Pin Definitions
-const int IN1_PIN = 6;
-const int IN2_PIN = 7;
+static const int __IN1_PIN = 6;
+static const int __IN2_PIN = 7;
 
 // PWM Settings
-const int freq = 25000;
-const int resolution = 10; // 0-1023
-const int ledChannel1 = 0;
-const int ledChannel2 = 1;
+static const int __freq = 25000;
+static const int __resolution = 10; // 0-1023
+static const int __ledChannel1 = 0;
+static const int __ledChannel2 = 1;
 
 // Speed Control Settings
-const int PHYSICAL_MAX_SPEED = 900; // The PWM duty cycle for maximum speed
-const int PHYSICAL_MIN_SPEED = 500; // The PWM duty cycle to overcome friction and start moving
+static const int __PHYSICAL_MAX_SPEED = 900; // The PWM duty cycle for maximum speed
+static const int __PHYSICAL_MIN_SPEED = 500; // The PWM duty cycle to overcome friction and start moving
 
-const int LOGICAL_MAX_SPEED = 1000; // A linear scale for speed control
-const int LOGICAL_SPEED_INCREMENT = 50;
-const int LOGICAL_INITIAL_SPEED = 400; // The default logical speed
-const int LOGICAL_REVERSE_INTERMEDIATE_SPEED = 200; // The speed to ramp down to during a reversal
+static const int __LOGICAL_MAX_SPEED = 1000; // A linear scale for speed control
+static const int __LOGICAL_SPEED_INCREMENT = 50;
+static const int __LOGICAL_INITIAL_SPEED = 400; // The default logical speed
+static const int __LOGICAL_REVERSE_INTERMEDIATE_SPEED = 200; // The speed to ramp down to during a reversal
 
 // Ramping settings
-const int RAMP_STEP = 5;            // How much to change speed in each ramp step
-const int DEFAULT_RAMP_DURATION_MS = 4000; // Default duration for a full ramp
-int currentRampDuration = DEFAULT_RAMP_DURATION_MS; // Variable to change ramp duration (in milliseconds)
+static const int __RAMP_STEP = 5;            // How much to change speed in each ramp step
+static const int __DEFAULT_RAMP_DURATION_MS = 4000; // Default duration for a full ramp
+static int __currentRampDuration = __DEFAULT_RAMP_DURATION_MS; // Variable to change ramp duration (in milliseconds)
 
 // --- LED Strip Settings ---
-#define ONBOARD_LED_PIN 35
-const int LED_STRIP_PIN = 2;  // Grove Port Pin (Yellow wire) on AtomS3. (G1 is Pin 1).
-const int NUM_LEDS = 198;      // Number of LEDs on your strip.
-const int VIRTUAL_GAP = 25;    // Non-existent pixels to match mechanical rotation
-const int LOGICAL_NUM_LEDS = NUM_LEDS + VIRTUAL_GAP;
+static const int __ONBOARD_LED_PIN = 35;
+static const int __LED_STRIP_PIN = 2;  // Grove Port Pin (Yellow wire) on AtomS3. (G1 is Pin 1).
+static const int __NUM_LEDS = 198;      // Number of LEDs on your strip.
+static const int __VIRTUAL_GAP = 25;    // Non-existent pixels to match mechanical rotation
+static const int __LOGICAL_NUM_LEDS = __NUM_LEDS + __VIRTUAL_GAP;
 
 // --- Remote Control ---
 // See the following for generating UUIDs:
 // https://www.uuidgenerator.net/
-#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define COMMAND_CHAR_UUID   "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+static const char* __SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+static const char* __COMMAND_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
 
 // --- Motor State Machine ---
 // This replaces the blocking delay() functions with a responsive state machine.
 enum MotorState {
-    MOTOR_IDLE,
-    MOTOR_RAMPING_DOWN,
-    MOTOR_RAMPING_UP
+    __MOTOR_IDLE,
+    __MOTOR_RAMPING_DOWN,
+    __MOTOR_RAMPING_UP
 };
-MotorState motorState = MOTOR_IDLE;
-int currentLogicalSpeed = 0; // The actual current speed of the motor
-int speedSetting = LOGICAL_INITIAL_SPEED; // The user's desired speed setting
-int targetLogicalSpeed = 0; // The immediate target for the current ramp
-unsigned long lastRampStepTime = 0;
-unsigned long rampStepDelay = 0;
-bool reverseAfterRampDown = false;
+static MotorState __motorState = __MOTOR_IDLE;
+static int __currentLogicalSpeed = 0; // The actual current speed of the motor
+static int __speedSetting = __LOGICAL_INITIAL_SPEED; // The user's desired speed setting
+static int __targetLogicalSpeed = 0; // The immediate target for the current ramp
+static unsigned long __lastRampStepTime = 0;
+static unsigned long __rampStepDelay = 0;
+static bool __reverseAfterRampDown = false;
 
-bool pendingOff = false; // Flag to handle "off" command safely in the main loop
-bool isDirectionClockwise = false; //runs a bit quieter in this direction.
-bool isMotorRunning = false;
+static bool __pendingOff = false; // Flag to handle "off" command safely in the main loop
+static bool __isDirectionClockwise = false; //runs a bit quieter in this direction.
+static bool __isMotorRunning = false;
 
 // --- Speed Sync Lookup Table ---
 struct SpeedSyncPair {
@@ -72,42 +72,43 @@ struct SpeedSyncPair {
     int revTimeMs;
 };
 
-const SpeedSyncPair speedSyncTable[] = {
+static const SpeedSyncPair __speedSyncTable[] = {
     { 400, 5200 },
     { 700, 2096 },
     { 1000, 1250 }
 };
-const int speedSyncTableSize = sizeof(speedSyncTable) / sizeof(SpeedSyncPair);
+static const int __speedSyncTableSize = sizeof(__speedSyncTable) / sizeof(SpeedSyncPair);
 
 // --- LED Strip Objects & State ---
-CRGB onboard_led[1];
-CRGB leds[NUM_LEDS];
-int led_position = 0;
-uint8_t bgHue = 160;          // Default to Blue (160)
-uint8_t bgBrightness = 76;    // Default to 30% (76/255)
-uint8_t cometHue = 0;         // Default to Red (0)
-int cometTailLength = 10;     // Default tail length
-int cometCount = 5;           // Default number of moving points
-float ledIntervalMs = 20.0f;  // Absolute time between LED steps in ms
-unsigned long last_led_strip_update = 0;
+static CRGB __onboard_led[1];
+static CRGB __leds[__NUM_LEDS];
+static int __led_position = 0;
+static uint8_t __masterBrightness = 255; // Global master brightness (0-255)
+static uint8_t __bgHue = 160;          // Default to Blue (160)
+static uint8_t __bgBrightness = 76;    // Default to 30% (76/255)
+static uint8_t __cometHue = 0;         // Default to Red (0)
+static int __cometTailLength = 10;     // Default tail length
+static int __cometCount = 3;           // Default number of moving points
+static float __ledIntervalMs = 20.0f;  // Absolute time between LED steps in ms
+static unsigned long __last_led_strip_update = 0;
 
 
 // --- Throttled Logging --- DO NOT REMOVE THIS. It is useful to have. 
 // A helper function for timestamped logs that can be throttled to prevent flooding the serial port.
 // Set MIN_LOG_GAP_MS to a value like 50 or 200 to enable throttling.
-unsigned long MIN_LOG_GAP_MS = 50; // Reduced gap to allow command + action logs to appear.
-unsigned long lastLogTimestamp = 0;
+static unsigned long __MIN_LOG_GAP_MS = 50; // Reduced gap to allow command + action logs to appear.
+static unsigned long __lastLogTimestamp = 0;
 
-void log_t(const char* format, ...) {
+static void log_t(const char* format, ...) {
     unsigned long now = millis();
-    if (MIN_LOG_GAP_MS == 0 || (now - lastLogTimestamp > MIN_LOG_GAP_MS)) {
+    if (__MIN_LOG_GAP_MS == 0 || (now - __lastLogTimestamp > __MIN_LOG_GAP_MS)) {
         char buf[256];
         va_list args;
         va_start(args, format);
         vsnprintf(buf, sizeof(buf), format, args);
         va_end(args);
         Serial.printf("%lu ms: %s\n", now, buf);
-        lastLogTimestamp = now;
+        __lastLogTimestamp = now;
     }
 }
 
@@ -116,34 +117,34 @@ void log_t(const char* format, ...) {
  * If no match is found, it falls back to the interpolated calculation method.
  */
 void applySpeedSyncLookup(int speed) {
-    if (speedSyncTableSize < 2) return;
+    if (__speedSyncTableSize < 2) return;
 
     float targetRevTime = 0;
 
-    if (speed <= speedSyncTable[0].logicalSpeed) {
+    if (speed <= __speedSyncTable[0].logicalSpeed) {
         // Linear extrapolation using the first segment
-        float m = (float)(speedSyncTable[1].revTimeMs - speedSyncTable[0].revTimeMs) /
-                  (float)(speedSyncTable[1].logicalSpeed - speedSyncTable[0].logicalSpeed);
-        targetRevTime = speedSyncTable[0].revTimeMs + m * (speed - speedSyncTable[0].logicalSpeed);
-    } else if (speed >= speedSyncTable[speedSyncTableSize - 1].logicalSpeed) {
+        float m = (float)(__speedSyncTable[1].revTimeMs - __speedSyncTable[0].revTimeMs) /
+                  (float)(__speedSyncTable[1].logicalSpeed - __speedSyncTable[0].logicalSpeed);
+        targetRevTime = __speedSyncTable[0].revTimeMs + m * (speed - __speedSyncTable[0].logicalSpeed);
+    } else if (speed >= __speedSyncTable[__speedSyncTableSize - 1].logicalSpeed) {
         // Linear extrapolation using the last segment
-        int last = speedSyncTableSize - 1;
-        float m = (float)(speedSyncTable[last].revTimeMs - speedSyncTable[last-1].revTimeMs) /
-                  (float)(speedSyncTable[last].logicalSpeed - speedSyncTable[last-1].logicalSpeed);
-        targetRevTime = speedSyncTable[last].revTimeMs + m * (speed - speedSyncTable[last].logicalSpeed);
+        int last = __speedSyncTableSize - 1;
+        float m = (float)(__speedSyncTable[last].revTimeMs - __speedSyncTable[last-1].revTimeMs) /
+                  (float)(__speedSyncTable[last].logicalSpeed - __speedSyncTable[last-1].logicalSpeed);
+        targetRevTime = __speedSyncTable[last].revTimeMs + m * (speed - __speedSyncTable[last].logicalSpeed);
     } else {
         // Piecewise linear interpolation
-        for (int i = 0; i < speedSyncTableSize - 1; i++) {
-            if (speed >= speedSyncTable[i].logicalSpeed && speed <= speedSyncTable[i+1].logicalSpeed) {
-                float fraction = (float)(speed - speedSyncTable[i].logicalSpeed) /
-                                 (float)(speedSyncTable[i+1].logicalSpeed - speedSyncTable[i].logicalSpeed);
-                targetRevTime = speedSyncTable[i].revTimeMs + fraction * (speedSyncTable[i+1].revTimeMs - speedSyncTable[i].revTimeMs);
+        for (int i = 0; i < __speedSyncTableSize - 1; i++) {
+            if (speed >= __speedSyncTable[i].logicalSpeed && speed <= __speedSyncTable[i+1].logicalSpeed) {
+                float fraction = (float)(speed - __speedSyncTable[i].logicalSpeed) /
+                                 (float)(__speedSyncTable[i+1].logicalSpeed - __speedSyncTable[i].logicalSpeed);
+                targetRevTime = __speedSyncTable[i].revTimeMs + fraction * (__speedSyncTable[i+1].revTimeMs - __speedSyncTable[i].revTimeMs);
                 break;
             }
         }
     }
 
-    ledIntervalMs = targetRevTime / (float)LOGICAL_NUM_LEDS;
+    __ledIntervalMs = targetRevTime / (float)__LOGICAL_NUM_LEDS;
 }
 
 // --- Core Motor & Mapping Functions ---
@@ -155,11 +156,11 @@ void applySpeedSyncLookup(int speed) {
  */
 void setMotorDuty(int duty, bool clockwise) {
     if (clockwise) {
-        ledcWrite(ledChannel1, 0);
-        ledcWrite(ledChannel2, duty);
+        ledcWrite(__ledChannel1, 0);
+        ledcWrite(__ledChannel2, duty);
     } else {
-        ledcWrite(ledChannel1, duty);
-        ledcWrite(ledChannel2, 0);
+        ledcWrite(__ledChannel1, duty);
+        ledcWrite(__ledChannel2, 0);
     }
 }
 
@@ -173,100 +174,100 @@ void setMotorDuty(int duty, bool clockwise) {
 int mapSpeedToDuty(int logicalSpeed) {
     if (logicalSpeed <= 0) return 0;
     // Map the logical speed (1-1000) to the physical PWM duty range (MIN to MAX)
-    return map(logicalSpeed, 1, LOGICAL_MAX_SPEED, PHYSICAL_MIN_SPEED, PHYSICAL_MAX_SPEED);
+    return map(logicalSpeed, 1, __LOGICAL_MAX_SPEED, __PHYSICAL_MIN_SPEED, __PHYSICAL_MAX_SPEED);
 }
 
 /**
  * @brief Calculates the delay between ramp steps to achieve a specific duration.
  */
 void updateRampTiming() {
-    int delta = abs(targetLogicalSpeed - currentLogicalSpeed);
-    int numSteps = (delta > 0) ? (delta / RAMP_STEP) : 1;
-    rampStepDelay = (numSteps > 0) ? (currentRampDuration / numSteps) : 1;
+    int delta = abs(__targetLogicalSpeed - __currentLogicalSpeed);
+    int numSteps = (delta > 0) ? (delta / __RAMP_STEP) : 1;
+    __rampStepDelay = (numSteps > 0) ? (__currentRampDuration / numSteps) : 1;
 }
 
 // --- State Change Functions (Non-Blocking) ---
 void triggerStart() {
     log_t("Triggering start...");
-    if (!isMotorRunning) {
-        led_position = 0; // Start LED cycle at the beginning
-        targetLogicalSpeed = speedSetting;
-        applySpeedSyncLookup(targetLogicalSpeed);
+    if (!__isMotorRunning) {
+        __led_position = 0; // Start LED cycle at the beginning
+        __targetLogicalSpeed = __speedSetting;
+        applySpeedSyncLookup(__targetLogicalSpeed);
         updateRampTiming();
-        motorState = MOTOR_RAMPING_UP;
-        isMotorRunning = true;
+        __motorState = __MOTOR_RAMPING_UP;
+        __isMotorRunning = true;
     }
 }
 
 void triggerReverse() {
     log_t("Triggering smooth reverse...");
-    if (isMotorRunning) {
-        reverseAfterRampDown = true;
-        targetLogicalSpeed = LOGICAL_REVERSE_INTERMEDIATE_SPEED; // Ramp down to intermediate speed
-        applySpeedSyncLookup(targetLogicalSpeed);
+    if (__isMotorRunning) {
+        __reverseAfterRampDown = true;
+        __targetLogicalSpeed = __LOGICAL_REVERSE_INTERMEDIATE_SPEED; // Ramp down to intermediate speed
+        applySpeedSyncLookup(__targetLogicalSpeed);
         updateRampTiming();
-        motorState = MOTOR_RAMPING_DOWN;
+        __motorState = __MOTOR_RAMPING_DOWN;
     } else {
         // If motor is stopped, just start it in the new direction
-        isDirectionClockwise = !isDirectionClockwise;
+        __isDirectionClockwise = !__isDirectionClockwise;
         triggerStart();
     }
 }
 
 void triggerSpeedUp() {
-    speedSetting = min(LOGICAL_MAX_SPEED, speedSetting + LOGICAL_SPEED_INCREMENT);
-    log_t("Triggering speed up. New setting: %d", speedSetting);
-    if (isMotorRunning)
+    __speedSetting = min(__LOGICAL_MAX_SPEED, __speedSetting + __LOGICAL_SPEED_INCREMENT);
+    log_t("Triggering speed up. New setting: %d", __speedSetting);
+    if (__isMotorRunning)
     {
-        targetLogicalSpeed = speedSetting;
-        applySpeedSyncLookup(targetLogicalSpeed);
+        __targetLogicalSpeed = __speedSetting;
+        applySpeedSyncLookup(__targetLogicalSpeed);
         updateRampTiming();
-        motorState = MOTOR_RAMPING_UP;
+        __motorState = __MOTOR_RAMPING_UP;
     }
 }
 
 void triggerSpeedDown() {
-    speedSetting = max(LOGICAL_INITIAL_SPEED, speedSetting - LOGICAL_SPEED_INCREMENT);
-    log_t("Triggering speed down. New setting: %d", speedSetting);
-    if (isMotorRunning)
+    __speedSetting = max(__LOGICAL_INITIAL_SPEED, __speedSetting - __LOGICAL_SPEED_INCREMENT);
+    log_t("Triggering speed down. New setting: %d", __speedSetting);
+    if (__isMotorRunning)
     {
-        targetLogicalSpeed = speedSetting;
-        applySpeedSyncLookup(targetLogicalSpeed);
+        __targetLogicalSpeed = __speedSetting;
+        applySpeedSyncLookup(__targetLogicalSpeed);
         updateRampTiming();
-        motorState = MOTOR_RAMPING_DOWN;
+        __motorState = __MOTOR_RAMPING_DOWN;
     }
 }
 
 void triggerStop() {
     log_t("Triggering stop...");
-    targetLogicalSpeed = 0;
+    __targetLogicalSpeed = 0;
     updateRampTiming();
-    motorState = MOTOR_RAMPING_DOWN;
-    reverseAfterRampDown = false; // Ensure this is false for a normal stop
+    __motorState = __MOTOR_RAMPING_DOWN;
+    __reverseAfterRampDown = false; // Ensure this is false for a normal stop
 }
 
 void triggerSetSpeed(int newSpeed) {
     // This function can now start the motor from a stopped state.
-    speedSetting = constrain(newSpeed, 0, LOGICAL_MAX_SPEED); // Allow setting speed to 0 to stop.
-    log_t("Triggering set speed. New setting: %d", speedSetting);
+    __speedSetting = constrain(newSpeed, 0, __LOGICAL_MAX_SPEED); // Allow setting speed to 0 to stop.
+    log_t("Triggering set speed. New setting: %d", __speedSetting);
 
-    if (speedSetting == 0) {
+    if (__speedSetting == 0) {
         triggerStop();
         return;
     }
 
-    targetLogicalSpeed = speedSetting;
-    applySpeedSyncLookup(targetLogicalSpeed);
+    __targetLogicalSpeed = __speedSetting;
+    applySpeedSyncLookup(__targetLogicalSpeed);
     updateRampTiming();
-    if (!isMotorRunning) {
-        led_position = 0; // Start LED cycle at the beginning
-        isMotorRunning = true;
+    if (!__isMotorRunning) {
+        __led_position = 0; // Start LED cycle at the beginning
+        __isMotorRunning = true;
     }
 
-    if (targetLogicalSpeed > currentLogicalSpeed) {
-        motorState = MOTOR_RAMPING_UP;
-    } else if (targetLogicalSpeed < currentLogicalSpeed) {
-        motorState = MOTOR_RAMPING_DOWN;
+    if (__targetLogicalSpeed > __currentLogicalSpeed) {
+        __motorState = __MOTOR_RAMPING_UP;
+    } else if (__targetLogicalSpeed < __currentLogicalSpeed) {
+        __motorState = __MOTOR_RAMPING_DOWN;
     }
 }
 
@@ -301,13 +302,19 @@ class CommandCallback : public BLECharacteristicCallbacks {
 
             if (cmd == "ms") {
                 // ms:XXX - Sets the motor's logical speed (0-1000).
-                val = constrain(val, 0, LOGICAL_MAX_SPEED);
+                val = constrain(val, 0, __LOGICAL_MAX_SPEED);
                 triggerSetSpeed(val);
             } else if (cmd == "ramp") {
                 // ramp:XXXX - Sets the duration (in ms) for a full speed ramp (0 to 1000).
                 val = constrain(val, 0, 10000);
-                currentRampDuration = val;
-                log_t("Set Ramp Duration: %d", currentRampDuration);
+                __currentRampDuration = val;
+                log_t("Set Ramp Duration: %d", __currentRampDuration);
+            } else if (cmd == "brightness") {
+                // brightness:XX - Sets the global master brightness (0-100).
+                int brightness_pct = constrain(val, 0, 100);
+                __masterBrightness = (uint8_t)((brightness_pct * 255) / 100);
+                FastLED.setBrightness(__masterBrightness);
+                log_t("Master Brightness set to: %d%% (%d/255)", brightness_pct, __masterBrightness);
             } else if (cmd == "back_color") {
                 // back_color:XXX,YY - Sets background Hue (0-255) and Brightness % (0-50).
                 std::string params = value.substr(colon_pos + 1);
@@ -315,9 +322,9 @@ class CommandCallback : public BLECharacteristicCallbacks {
                 if (comma_pos != std::string::npos) {
                     int h = atoi(params.substr(0, comma_pos).c_str());
                     int b_pct = atoi(params.substr(comma_pos + 1).c_str());
-                    bgHue = (uint8_t)constrain(h, 0, 255);
-                    bgBrightness = (uint8_t)((constrain(b_pct, 0, 50) * 255) / 100);
-                    log_t("Background set to Hue: %d, Brightness: %d%% (%d)", bgHue, b_pct, bgBrightness);
+                    __bgHue = (uint8_t)constrain(h, 0, 255);
+                    __bgBrightness = (uint8_t)((constrain(b_pct, 0, 50) * 255) / 100);
+                    log_t("Background set to Hue: %d, Brightness: %d%% (%d)", __bgHue, b_pct, __bgBrightness);
                 }
             } else if (cmd == "tails") {
                 // tails:XXX,YY,ZZ - Sets Comet Hue (0-255), Tail Length (LEDs), and Comet Count.
@@ -329,11 +336,11 @@ class CommandCallback : public BLECharacteristicCallbacks {
                     int h = atoi(params.substr(0, comma1).c_str());
                     int l = atoi(params.substr(comma1 + 1, comma2 - (comma1 + 1)).c_str());
                     int c = atoi(params.substr(comma2 + 1).c_str());
-                    if (c * l <= LOGICAL_NUM_LEDS * 0.8) {
-                        cometHue = (uint8_t)constrain(h, 0, 255);
-                        cometTailLength = max(1, l);
-                        cometCount = max(1, c);
-                        log_t("Tails set: Hue %d, Length %d, Count %d", cometHue, cometTailLength, cometCount);
+                    if (c * l <= __LOGICAL_NUM_LEDS * 0.8) {
+                        __cometHue = (uint8_t)constrain(h, 0, 255);
+                        __cometTailLength = max(1, l);
+                        __cometCount = max(1, c);
+                        log_t("Tails set: Hue %d, Length %d, Count %d", __cometHue, __cometTailLength, __cometCount);
                     } else {
                         log_t("Tails command ignored: exceeds 80%% of strip.");
                     }
@@ -341,19 +348,19 @@ class CommandCallback : public BLECharacteristicCallbacks {
             } else if (cmd == "c") {
                 // c:XXXX - Sets the absolute time for one full revolution of the LED cycle in ms.
                 if (val > 0) {
-                    ledIntervalMs = (float)val / (float)LOGICAL_NUM_LEDS;
-                    log_t("LED Revolution time set to %d ms. Step interval: %.2f ms", val, ledIntervalMs);
+                    __ledIntervalMs = (float)val / (float)__LOGICAL_NUM_LEDS;
+                    log_t("LED Revolution time set to %d ms. Step interval: %.2f ms", val, __ledIntervalMs);
                 }
             } else if (cmd == "off") {
                 // off: - Ramps down the motor and kills LED animation immediately.
-                pendingOff = true;
+                __pendingOff = true;
             } else {
                 log_t("Unknown command prefix: %s", cmd.c_str());
             }
 
         } else if (value == "off") {
             // Handle "off" without a colon
-            pendingOff = true;
+            __pendingOff = true;
         } else if (value.length() == 1) {
             // --- Single-letter Motor Commands ---
             char cmd_char = value[0];
@@ -369,12 +376,12 @@ class CommandCallback : public BLECharacteristicCallbacks {
             // --- 2-character LED Cycle Commands ---
             if (value == "cu") {
                 // cu - Cycle Up: Increases LED animation speed by 8% (decreases interval).
-                ledIntervalMs *= 0.92f;
-                log_t("LED Cycle speed UP 8%%. Interval: %.2f ms", ledIntervalMs);
+                __ledIntervalMs *= 0.92f;
+                log_t("LED Cycle speed UP 8%%. Interval: %.2f ms", __ledIntervalMs);
             } else if (value == "cd") {
                 // cd - Cycle Down: Decreases LED animation speed by 8% (increases interval).
-                ledIntervalMs *= 1.08f;
-                log_t("LED Cycle speed DOWN 8%%. Interval: %.2f ms", ledIntervalMs);
+                __ledIntervalMs *= 1.08f;
+                log_t("LED Cycle speed DOWN 8%%. Interval: %.2f ms", __ledIntervalMs);
             }
         } else {
             log_t("Invalid command format: %s", value.c_str());
@@ -391,48 +398,48 @@ void setup() {
     M5.begin(cfg);
 
     // Force LED pin LOW immediately to prevent floating-point startup flickers
-    pinMode(LED_STRIP_PIN, OUTPUT);
-    digitalWrite(LED_STRIP_PIN, LOW);
+    pinMode(__LED_STRIP_PIN, OUTPUT);
+    digitalWrite(__LED_STRIP_PIN, LOW);
 
     // Reset pins to ensure no other peripheral is holding them
-    gpio_reset_pin((gpio_num_t)IN1_PIN);
-    gpio_reset_pin((gpio_num_t)IN2_PIN);
+    gpio_reset_pin((gpio_num_t)__IN1_PIN);
+    gpio_reset_pin((gpio_num_t)__IN2_PIN);
 
     log_t("System Initialized");
 
     // Configure PWM for H-Bridge
-    ledcSetup(ledChannel1, freq, resolution);
-    ledcSetup(ledChannel2, freq, resolution);
-    ledcAttachPin(IN1_PIN, ledChannel1);
-    ledcAttachPin(IN2_PIN, ledChannel2);
+    ledcSetup(__ledChannel1, __freq, __resolution);
+    ledcSetup(__ledChannel2, __freq, __resolution);
+    ledcAttachPin(__IN1_PIN, __ledChannel1);
+    ledcAttachPin(__IN2_PIN, __ledChannel2);
     
     // --- FastLED Strip Setup ---
-    FastLED.addLeds<WS2812B, ONBOARD_LED_PIN, GRB>(onboard_led, 1);
-    FastLED.addLeds<WS2812B, LED_STRIP_PIN, GRB>(leds, NUM_LEDS);
+    FastLED.addLeds<WS2812B, __ONBOARD_LED_PIN, GRB>(__onboard_led, 1);
+    FastLED.addLeds<WS2812B, __LED_STRIP_PIN, GRB>(__leds, __NUM_LEDS);
 
     // Set a safety power limit (5V, 500mA is safe for AtomS3 internal regulator)
     FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);
-    FastLED.setBrightness(255);
+    FastLED.setBrightness(__masterBrightness);
 
     // Immediate blackout to overwrite any RMT initialization glitches
     FastLED.showColor(CRGB::Black); 
 
     // Initial State: Stopped
-    ledcWrite(ledChannel1, 0);
-    ledcWrite(ledChannel2, 0);
-    isMotorRunning = false;
+    ledcWrite(__ledChannel1, 0);
+    ledcWrite(__ledChannel2, 0);
+    __isMotorRunning = false;
 
-    speedSetting = LOGICAL_INITIAL_SPEED;
+    __speedSetting = __LOGICAL_INITIAL_SPEED;
 
     // --- BLE Setup ---
     BLEDevice::init("Spiral Sculpture");
     BLEServer *pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
-    BLEService *pService = pServer->createService(SERVICE_UUID);
+    BLEService *pService = pServer->createService(__SERVICE_UUID);
 
     // Command Characteristic
     BLECharacteristic *pCommandCharacteristic = pService->createCharacteristic(
-                                         COMMAND_CHAR_UUID,
+                                         __COMMAND_CHAR_UUID,
                                          BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE
                                        );
     pCommandCharacteristic->setCallbacks(new CommandCallback());
@@ -442,7 +449,7 @@ void setup() {
     pServer->getAdvertising()->start();
     log_t("BLE Server started. Waiting for a client connection...");
 
-    onboard_led[0] = CRGB(50, 0, 0); // Dim Red to show power is on and motor is stopped
+    __onboard_led[0] = CRGB(50, 0, 0); // Dim Red to show power is on and motor is stopped
     FastLED.show();
 
     // Start the motor running automatically on initialization.
@@ -455,53 +462,53 @@ void loop() {
     M5.update(); // Required for button state updates
 
     // --- Handle Pending Off Command ---
-    if (pendingOff) {
+    if (__pendingOff) {
         log_t("Processing Off command...");
         triggerStop();         // Start motor ramp down
-        isMotorRunning = false; // Stop LED animation logic
+        __isMotorRunning = false; // Stop LED animation logic
         FastLED.clear(true);    // Blackout all LEDs immediately
-        pendingOff = false;
+        __pendingOff = false;
     }
 
     // --- LED Strip Animation ---
     // The LEDs only animate if the motor is logically running.
-    if (isMotorRunning && currentLogicalSpeed > 0) {
+    if (__isMotorRunning && __currentLogicalSpeed > 0) {
         // Use the absolute interval set by the user.
-        unsigned long dynamicInterval = (unsigned long)max(1.0f, ledIntervalMs);
+        unsigned long dynamicInterval = (unsigned long)max(1.0f, __ledIntervalMs);
 
-        if (millis() - last_led_strip_update > dynamicInterval) {
-            last_led_strip_update = millis();
+        if (millis() - __last_led_strip_update > dynamicInterval) {
+            __last_led_strip_update = millis();
             
             // 1. Fade existing LEDs for the comet tail based on requested length
-            uint8_t fadeAmount = 255 / cometTailLength;
-            fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
+            uint8_t fadeAmount = 255 / __cometTailLength;
+            fadeToBlackBy(__leds, __NUM_LEDS, fadeAmount);
             
             // 2. Apply dynamic background floor
-            CRGB bgColor = CHSV(bgHue, 255, bgBrightness);
+            CRGB bgColor = CHSV(__bgHue, 255, __bgBrightness);
             
             // Update onboard LED to show direction: Green for CW, Blue for CCW
-            onboard_led[0] = isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
+            __onboard_led[0] = __isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
 
             // Apply background using a "Lighten" blend.
             // This preserves the tail's color by taking the maximum of each channel.
-            for (int i = 0; i < NUM_LEDS; i++) {
-                leds[i].r = max(leds[i].r, bgColor.r);
-                leds[i].g = max(leds[i].g, bgColor.g);
-                leds[i].b = max(leds[i].b, bgColor.b);
+            for (int i = 0; i < __NUM_LEDS; i++) {
+                __leds[i].r = max(__leds[i].r, bgColor.r);
+                __leds[i].g = max(__leds[i].g, bgColor.g);
+                __leds[i].b = max(__leds[i].b, bgColor.b);
             }
 
-            if (isDirectionClockwise) {
-                led_position = (led_position - 1 + LOGICAL_NUM_LEDS) % LOGICAL_NUM_LEDS;
+            if (__isDirectionClockwise) {
+                __led_position = (__led_position - 1 + __LOGICAL_NUM_LEDS) % __LOGICAL_NUM_LEDS;
             } else {
-                led_position = (led_position + 1) % LOGICAL_NUM_LEDS;
+                __led_position = (__led_position + 1) % __LOGICAL_NUM_LEDS;
             }
 
             // 3. Draw the heads (spaced evenly)
-            for (int j = 0; j < cometCount; j++) {
-                int pos = (led_position + j * (LOGICAL_NUM_LEDS / cometCount)) % LOGICAL_NUM_LEDS;
+            for (int j = 0; j < __cometCount; j++) {
+                int pos = (__led_position + j * (__LOGICAL_NUM_LEDS / __cometCount)) % __LOGICAL_NUM_LEDS;
                 // Only draw if the logical position exists on the physical strip
-                if (pos < NUM_LEDS) {
-                    leds[pos] = CHSV(cometHue, 255, 255);
+                if (pos < __NUM_LEDS) {
+                    __leds[pos] = CHSV(__cometHue, 255, 255);
                 }
             }
             FastLED.show();
@@ -510,45 +517,45 @@ void loop() {
 
 
     // --- Non-Blocking Motor State Machine ---
-    if (motorState != MOTOR_IDLE) {
+    if (__motorState != __MOTOR_IDLE) {
         // Use the pre-calculated rampStepDelay for the timer check.
-        if (millis() - lastRampStepTime > rampStepDelay) {
-            lastRampStepTime = millis();
+        if (millis() - __lastRampStepTime > __rampStepDelay) {
+            __lastRampStepTime = millis();
 
-            if (motorState == MOTOR_RAMPING_UP) {
-                currentLogicalSpeed = min(targetLogicalSpeed, currentLogicalSpeed + RAMP_STEP);
+            if (__motorState == __MOTOR_RAMPING_UP) {
+                __currentLogicalSpeed = min(__targetLogicalSpeed, __currentLogicalSpeed + __RAMP_STEP);
             } else { // RAMPING_DOWN
-                currentLogicalSpeed = max(targetLogicalSpeed, currentLogicalSpeed - RAMP_STEP);
+                __currentLogicalSpeed = max(__targetLogicalSpeed, __currentLogicalSpeed - __RAMP_STEP);
             }
 
-            // log_t("Ramping... Current Speed: %d", currentLogicalSpeed); // This line is too verbose for normal operation.
+            // log_t("Ramping... Current Speed: %d", __currentLogicalSpeed); // This line is too verbose for normal operation.
 
-            setMotorDuty(mapSpeedToDuty(currentLogicalSpeed), isDirectionClockwise);
+            setMotorDuty(mapSpeedToDuty(__currentLogicalSpeed), __isDirectionClockwise);
 
             // Update LED timing to match the current physical speed during the ramp
-            applySpeedSyncLookup(currentLogicalSpeed);
+            applySpeedSyncLookup(__currentLogicalSpeed);
 
             // Check if ramp is complete
-            if (currentLogicalSpeed == targetLogicalSpeed) {
+            if (__currentLogicalSpeed == __targetLogicalSpeed) {
                 // If a reversal was triggered, the first ramp-down to the intermediate speed is complete.
                 // Now, start the ramp-up in the other direction.
-                if (reverseAfterRampDown) {
-                    isDirectionClockwise = !isDirectionClockwise;
-                    targetLogicalSpeed = speedSetting; // Ramp up to the desired speed setting
-                    applySpeedSyncLookup(targetLogicalSpeed);
+                if (__reverseAfterRampDown) {
+                    __isDirectionClockwise = !__isDirectionClockwise;
+                    __targetLogicalSpeed = __speedSetting; // Ramp up to the desired speed setting
+                    applySpeedSyncLookup(__targetLogicalSpeed);
                     updateRampTiming();
-                    motorState = MOTOR_RAMPING_UP;
-                    reverseAfterRampDown = false;
-                    isMotorRunning = true;
+                    __motorState = __MOTOR_RAMPING_UP;
+                    __reverseAfterRampDown = false;
+                    __isMotorRunning = true;
                 } else {
-                    motorState = MOTOR_IDLE;
-                    if (currentLogicalSpeed == 0) {
-                        isMotorRunning = false;
-                        speedSetting = LOGICAL_INITIAL_SPEED; // Reset for next start
-                        onboard_led[0] = CRGB(50, 0, 0); // Red when stopped
+                    __motorState = __MOTOR_IDLE;
+                    if (__currentLogicalSpeed == 0) {
+                        __isMotorRunning = false;
+                        __speedSetting = __LOGICAL_INITIAL_SPEED; // Reset for next start
+                        __onboard_led[0] = CRGB(50, 0, 0); // Red when stopped
                         FastLED.show();
                     }
-                    log_t("Ramp complete. Current Speed: %d", currentLogicalSpeed);
+                    log_t("Ramp complete. Current Speed: %d", __currentLogicalSpeed);
                 }
             }
         }
@@ -557,7 +564,7 @@ void loop() {
     // Priority 1: Long Press. This is the highest priority and cancels any pending clicks.
     if (M5.BtnA.pressedFor(2000)) {
         // Only trigger a stop if the motor is running and not already in the process of stopping.
-        if (isMotorRunning && !(motorState == MOTOR_RAMPING_DOWN && targetLogicalSpeed == 0)) {
+        if (__isMotorRunning && !(__motorState == __MOTOR_RAMPING_DOWN && __targetLogicalSpeed == 0)) {
             triggerStop();
         }
     }
