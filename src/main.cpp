@@ -9,6 +9,8 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <stdarg.h>
+#include <vector>
+#include <string>
 
 /*
  * --- Bluetooth Command Reference ---
@@ -30,6 +32,9 @@
  * motor_speed_down   - Decrease target speed setting by 50 units.
  * led_cycle_up       - Increase LED cycle speed by 8% (Enables Manual Sync).
  * led_cycle_down     - Decrease LED cycle speed by 8% (Enables Manual Sync).
+ * run_script:NAME    - Start a named script (e.g., "run_script:funky").
+ * hold:XXXX          - (Script only) Wait XXXX ms before next command.
+ * led_blink:H,B,U,D,C - Pulse Hue (0-255), Brightness % (0-100), Ramp Up (ms), Ramp Down (ms), Count (0=loop).
  */
 
 // Atomic H-Driver Pin Definitions
@@ -121,6 +126,60 @@ static bool __isManualLedInterval = false;    // Flag to override the sync table
 static float __manualLedIntervalMs = 0;       // The base interval set by the user
 static int __manualSpeedReference = 0;        // The logical speed at which the manual interval was set
 
+// --- LED Blink State ---
+static bool __isBlinkActive = false;
+static uint8_t __blinkHue = 0;
+static uint8_t __blinkMaxBri = 255;
+static unsigned long __blinkUpDuration = 1000;
+static unsigned long __blinkDownDuration = 1000;
+static unsigned long __blinkStartTime = 0;
+static int __blinkTargetCount = 0; // 0 means loop indefinitely
+
+// --- Scripting Engine State ---
+static bool __isScriptRunning = false;
+static int __scriptCommandIndex = 0;
+static unsigned long __scriptLastCommandTime = 0;
+static unsigned long __scriptHoldDuration = 0;
+static std::vector<std::string> __activeScriptCommands;
+
+static const std::vector<std::string> __script_funky = {
+    "motor_speed:500",
+    "hold:3000",
+    "led_tails:0,15,3",
+    "hold:3000",
+    "motor_reverse",
+    "hold:4000",
+    "motor_speed:800",
+    "led_background:32,10",
+    "hold:1000",
+    "led_background:64,10",
+    "hold:1000",
+    "led_background:96,10",
+    "hold:1000",
+    "led_background:0,20",
+    "hold:1000",
+    "led_tails:128,10,5",
+    "motor_reverse",
+    "hold:10000",
+    "motor_speed:1000",
+    "led_blink:0,70,200,400,10"
+    "motor_speed:400",
+    "led_tails:0,15,1",
+    "led_cycle:8000",
+    "hold:3000",
+    "led_cycle:7000",
+    "hold:3000",
+    "led_cycle:6000",
+    "hold:3000",
+    "led_cycle:5000",
+    "hold:3000",
+    "led_cycle:4000",
+    "hold:3000",
+    "led_cycle:3000",
+    "hold:3000"
+};
+
+// --- Throttled Logging --- DO NOT REMOVE THIS. It is useful to have. 
 
 // --- Throttled Logging --- DO NOT REMOVE THIS. It is useful to have. 
 // A helper function for timestamped logs that can be throttled to prevent flooding the serial port.
@@ -328,6 +387,173 @@ void triggerSetSpeed(int newSpeed) {
     }
 }
 
+// --- BLE Command Handoff ---
+static char __bleCommandBuffer[128];
+static volatile bool __bleCommandAvailable = false;
+
+/**
+ * @brief Processes a single command string.
+ */
+void processCommand(std::string value) {
+    if (value.length() == 0) return;
+
+    size_t colon_pos = value.find(':');
+
+    if (colon_pos != std::string::npos) {
+        std::string cmd = value.substr(0, colon_pos);
+        int val = atoi(value.substr(colon_pos + 1).c_str());
+
+        if (cmd == "motor_speed") {
+            val = constrain(val, 0, __LOGICAL_MAX_SPEED);
+            triggerSetSpeed(val);
+        } else if (cmd == "motor_ramp") {
+            val = constrain(val, 0, 10000);
+            __currentRampDuration = val;
+            log_t("Set Motor Ramp Duration: %d", __currentRampDuration);
+        } else if (cmd == "led_brightness") {
+            int brightness_pct = constrain(val, 0, 100);
+            __masterBrightness = (uint8_t)((brightness_pct * 255) / 100);
+            FastLED.setBrightness(__masterBrightness);
+            log_t("LED Master Brightness set to: %d%% (%d/255)", brightness_pct, __masterBrightness);
+        } else if (cmd == "led_background") {
+            __isBlinkActive = false;
+            std::string params = value.substr(colon_pos + 1);
+            size_t comma_pos = params.find(',');
+            if (comma_pos != std::string::npos) {
+                int h = atoi(params.substr(0, comma_pos).c_str());
+                int b_pct = atoi(params.substr(comma_pos + 1).c_str());
+                __bgHue = (uint8_t)constrain(h, 0, 255);
+                __bgBrightness = (uint8_t)((constrain(b_pct, 0, 50) * 255) / 100);
+                log_t("LED Background set to Hue: %d, Brightness: %d%% (%d)", __bgHue, b_pct, __bgBrightness);
+            }
+        } else if (cmd == "led_tails") {
+            __isBlinkActive = false;
+            std::string params = value.substr(colon_pos + 1);
+            size_t comma1 = params.find(',');
+            size_t comma2 = params.find(',', comma1 + 1);
+            if (comma1 != std::string::npos && comma2 != std::string::npos) {
+                int h = atoi(params.substr(0, comma1).c_str());
+                int l = atoi(params.substr(comma1 + 1, comma2 - (comma1 + 1)).c_str());
+                int c = atoi(params.substr(comma2 + 1).c_str());
+                if (c * l <= __LOGICAL_NUM_LEDS * 0.8) {
+                    __cometHue = (uint8_t)constrain(h, 0, 255);
+                    __cometTailLength = max(1, l);
+                    __cometCount = max(1, c);
+                    log_t("LED Tails set: Hue %d, Length %d, Count %d", __cometHue, __cometTailLength, __cometCount);
+                } else {
+                    log_t("Tails command ignored: exceeds 80%% of strip.");
+                }
+            }
+        } else if (cmd == "led_cycle_time") {
+            __isBlinkActive = false;
+            if (val > 0) {
+                __isManualLedInterval = true;
+                __manualLedIntervalMs = (float)val / (float)__LOGICAL_NUM_LEDS;
+                __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
+                __ledIntervalMs = __manualLedIntervalMs;
+                log_t("LED Manual Sync set at speed %d. Step interval: %.2f ms", __manualSpeedReference, __ledIntervalMs);
+            }
+        } else if (cmd == "system_off") {
+            __isBlinkActive = false;
+            __pendingOff = true;
+        } else if (cmd == "run_script") {
+            std::string scriptName = value.substr(colon_pos + 1);
+            if (scriptName == "funky") {
+                __activeScriptCommands = __script_funky;
+                __scriptCommandIndex = 0;
+                __scriptLastCommandTime = millis();
+                __scriptHoldDuration = 0;
+                __isScriptRunning = true;
+                log_t("Script started: funky");
+            }
+        } else if (cmd == "hold") {
+            if (__isScriptRunning) {
+                __scriptHoldDuration = val;
+            }
+        } else if (cmd == "led_blink") {
+            // led_blink:HHH,BB,XXXX,YYYY,C
+            std::string params = value.substr(colon_pos + 1);
+            size_t c1 = params.find(',');
+            size_t c2 = params.find(',', c1 + 1);
+            size_t c3 = params.find(',', c2 + 1);
+            if (c1 != std::string::npos && c2 != std::string::npos && c3 != std::string::npos) {
+                int h = atoi(params.substr(0, c1).c_str());
+                int b = atoi(params.substr(c1 + 1, c2 - (c1 + 1)).c_str());
+                int u = atoi(params.substr(c2 + 1, c3 - (c2 + 1)).c_str());
+                
+                int d = 0;
+                int count = 0;
+                size_t c4 = params.find(',', c3 + 1);
+                if (c4 != std::string::npos) {
+                    d = atoi(params.substr(c3 + 1, c4 - (c3 + 1)).c_str());
+                    count = atoi(params.substr(c4 + 1).c_str());
+                } else {
+                    d = atoi(params.substr(c3 + 1).c_str());
+                    count = 0;
+                }
+                
+                __blinkHue = (uint8_t)constrain(h, 0, 255);
+                __blinkMaxBri = (uint8_t)((constrain(b, 0, 100) * 255) / 100);
+                __blinkUpDuration = (unsigned long)max(1UL, (unsigned long)u);
+                __blinkDownDuration = (unsigned long)max(1UL, (unsigned long)d);
+                __blinkTargetCount = count;
+                
+                FastLED.clear(true);
+                __isBlinkActive = true;
+                __blinkStartTime = millis();
+                log_t("LED Blink set: Hue %d, MaxBri %d, Up %lu, Down %lu, Count %d", __blinkHue, b, __blinkUpDuration, __blinkDownDuration, __blinkTargetCount);
+            }
+        } else {
+            log_t("Unknown command prefix: %s", cmd.c_str());
+        }
+
+    } else if (value == "system_off") {
+        __isBlinkActive = false;
+        __pendingOff = true;
+    } else if (value == "motor_start") {
+        triggerStart();
+    } else if (value == "motor_stop") {
+        triggerStop();
+    } else if (value == "system_reset") {
+        __isScriptRunning = false;
+        __isBlinkActive = false;
+        __speedSetting = __LOGICAL_INITIAL_SPEED;
+        __masterBrightness = 255;
+        __bgHue = 160;
+        __bgBrightness = 76;
+        __cometHue = 0;
+        __cometTailLength = 10;
+        __cometCount = 3;
+        __isManualLedInterval = false;
+        __currentRampDuration = __DEFAULT_RAMP_DURATION_MS;
+        FastLED.setBrightness(__masterBrightness);
+        triggerSetSpeed(__speedSetting);
+        log_t("System reset to defaults and started.");
+    } else if (value == "motor_reverse") {
+        triggerReverse();
+    } else if (value == "motor_speed_up") {
+        triggerSpeedUp();
+    } else if (value == "motor_speed_down") {
+        triggerSpeedDown();
+    } else if (value == "led_cycle_up") {
+        __isBlinkActive = false;
+        __isManualLedInterval = true;
+        __ledIntervalMs *= 0.92f;
+        __manualLedIntervalMs = __ledIntervalMs;
+        __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
+        log_t("LED Cycle speed UP 8%% (Manual). Interval: %.2f ms", __ledIntervalMs);
+    } else if (value == "led_cycle_down") {
+        __isBlinkActive = false;
+        __isManualLedInterval = true;
+        __ledIntervalMs *= 1.08f;
+        __manualLedIntervalMs = __ledIntervalMs;
+        __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
+        log_t("LED Cycle speed DOWN 8%% (Manual). Interval: %.2f ms", __ledIntervalMs);
+    } else {
+        log_t("Invalid command format: %s", value.c_str());
+    }
+}
+
 // --- BLE Callbacks ---
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
@@ -344,124 +570,16 @@ class MyServerCallbacks : public BLEServerCallbacks {
 class CommandCallback : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         std::string value = pCharacteristic->getValue();
-        if (value.length() == 0) {
-            return;
+        if (value.length() == 0) return;
+
+        log_t("BLE Received: %s", value.c_str());
+
+        // Thread-safe handoff to loop() to avoid cross-core race conditions
+        if (value.length() < sizeof(__bleCommandBuffer)) {
+            strcpy(__bleCommandBuffer, value.c_str());
+            __bleCommandAvailable = true;
         }
 
-        log_t("Received command: %s", value.c_str());
-
-        size_t colon_pos = value.find(':');
-
-        if (colon_pos != std::string::npos) {
-            // --- Commands with values (Format: "cmd:value" or "cmd:val1,val2") ---
-            std::string cmd = value.substr(0, colon_pos);
-            int val = atoi(value.substr(colon_pos + 1).c_str());
-
-            if (cmd == "motor_speed") {
-                // motor_speed:XXX - Sets the motor's logical speed (0-1000).
-                val = constrain(val, 0, __LOGICAL_MAX_SPEED);
-                triggerSetSpeed(val);
-            } else if (cmd == "motor_ramp") {
-                // motor_ramp:XXXX - Sets the duration (in ms) for a full speed ramp (0 to 1000).
-                val = constrain(val, 0, 10000);
-                __currentRampDuration = val;
-                log_t("Set Motor Ramp Duration: %d", __currentRampDuration);
-            } else if (cmd == "led_brightness") {
-                // led_brightness:XX - Sets the global master brightness (0-100).
-                int brightness_pct = constrain(val, 0, 100);
-                __masterBrightness = (uint8_t)((brightness_pct * 255) / 100);
-                FastLED.setBrightness(__masterBrightness);
-                log_t("LED Master Brightness set to: %d%% (%d/255)", brightness_pct, __masterBrightness);
-            } else if (cmd == "led_background") {
-                // led_background:XXX,YY - Sets background Hue (0-255) and Brightness % (0-50).
-                std::string params = value.substr(colon_pos + 1);
-                size_t comma_pos = params.find(',');
-                if (comma_pos != std::string::npos) {
-                    int h = atoi(params.substr(0, comma_pos).c_str());
-                    int b_pct = atoi(params.substr(comma_pos + 1).c_str());
-                    __bgHue = (uint8_t)constrain(h, 0, 255);
-                    __bgBrightness = (uint8_t)((constrain(b_pct, 0, 50) * 255) / 100);
-                    log_t("LED Background set to Hue: %d, Brightness: %d%% (%d)", __bgHue, b_pct, __bgBrightness);
-                }
-            } else if (cmd == "led_tails") {
-                // led_tails:XXX,YY,ZZ - Sets Comet Hue (0-255), Tail Length (LEDs), and Comet Count.
-                // Safety: Ignored if total lit LEDs (Count * Length) exceeds 80% of the strip.
-                std::string params = value.substr(colon_pos + 1);
-                size_t comma1 = params.find(',');
-                size_t comma2 = params.find(',', comma1 + 1);
-                if (comma1 != std::string::npos && comma2 != std::string::npos) {
-                    int h = atoi(params.substr(0, comma1).c_str());
-                    int l = atoi(params.substr(comma1 + 1, comma2 - (comma1 + 1)).c_str());
-                    int c = atoi(params.substr(comma2 + 1).c_str());
-                    if (c * l <= __LOGICAL_NUM_LEDS * 0.8) {
-                        __cometHue = (uint8_t)constrain(h, 0, 255);
-                        __cometTailLength = max(1, l);
-                        __cometCount = max(1, c);
-                        log_t("LED Tails set: Hue %d, Length %d, Count %d", __cometHue, __cometTailLength, __cometCount);
-                    } else {
-                        log_t("Tails command ignored: exceeds 80%% of strip.");
-                    }
-                }
-            } else if (cmd == "led_cycle_time") {
-                // led_cycle_time:XXXX - Sets the absolute time for one full revolution of the LED cycle in ms.
-                if (val > 0) {
-                    __isManualLedInterval = true;
-                    __manualLedIntervalMs = (float)val / (float)__LOGICAL_NUM_LEDS;
-                    __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
-                    __ledIntervalMs = __manualLedIntervalMs;
-                    log_t("LED Manual Sync set at speed %d. Step interval: %.2f ms", __manualSpeedReference, __ledIntervalMs);
-                }
-            } else if (cmd == "system_off") {
-                // system_off: - Ramps down the motor and kills LED animation immediately.
-                __pendingOff = true;
-            } else {
-                log_t("Unknown command prefix: %s", cmd.c_str());
-            }
-
-        } else if (value == "system_off") {
-            // Handle "system_off" without a colon
-            __pendingOff = true;
-        } else if (value == "motor_start") {
-            triggerStart();
-        } else if (value == "motor_stop") {
-            triggerStop();
-        } else if (value == "system_reset") {
-            // Reset all parameters to setup() defaults
-            __speedSetting = __LOGICAL_INITIAL_SPEED;
-            __masterBrightness = 255;
-            __bgHue = 160;
-            __bgBrightness = 76;
-            __cometHue = 0;
-            __cometTailLength = 10;
-            __cometCount = 3;
-            __isManualLedInterval = false;
-            __currentRampDuration = __DEFAULT_RAMP_DURATION_MS;
-            FastLED.setBrightness(__masterBrightness);
-            triggerSetSpeed(__speedSetting);
-            log_t("System reset to defaults and started.");
-        } else if (value == "motor_reverse") {
-            triggerReverse();
-        } else if (value == "motor_speed_up") {
-            triggerSpeedUp();
-        } else if (value == "motor_speed_down") {
-            triggerSpeedDown();
-        } else if (value == "led_cycle_up") {
-            __isManualLedInterval = true;
-            __ledIntervalMs *= 0.92f;
-            __manualLedIntervalMs = __ledIntervalMs;
-            __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
-            log_t("LED Cycle speed UP 8%% (Manual). Interval: %.2f ms", __ledIntervalMs);
-        } else if (value == "led_cycle_down") {
-            __isManualLedInterval = true;
-            __ledIntervalMs *= 1.08f;
-            __manualLedIntervalMs = __ledIntervalMs;
-            __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
-            log_t("LED Cycle speed DOWN 8%% (Manual). Interval: %.2f ms", __ledIntervalMs);
-        } else {
-            log_t("Invalid command format: %s", value.c_str());
-        }
-
-        // Update the characteristic's value so the last command can be read back.
         pCharacteristic->setValue(value);
     }
 };
@@ -535,6 +653,35 @@ void loop() {
     //log_t("Loop start."); // Diagnostic: Check if the main loop is running. However, this bogs down all logging.
     M5.update(); // Required for button state updates
 
+    // --- Handle BLE Commands ---
+    if (__bleCommandAvailable) {
+        std::string cmd = __bleCommandBuffer;
+        __bleCommandAvailable = false;
+
+        // Only allow system_reset to interrupt a script
+        if (cmd == "system_reset") {
+            __isScriptRunning = false;
+            processCommand(cmd);
+        } else if (!__isScriptRunning) {
+            processCommand(cmd);
+        } else {
+            log_t("BLE command ignored (Script running): %s", cmd.c_str());
+        }
+    }
+
+    // --- Script Engine ---
+    // Only advance if motor is idle AND any finite blink sequence has finished
+    if (__isScriptRunning && __motorState == __MOTOR_IDLE && (__blinkTargetCount == 0 || !__isBlinkActive)) {
+        if (millis() - __scriptLastCommandTime >= __scriptHoldDuration) {
+            std::string cmd = __activeScriptCommands[__scriptCommandIndex];
+            __scriptLastCommandTime = millis();
+            __scriptHoldDuration = 0; // Reset hold for the next command
+            log_t("Script Executing: %s", cmd.c_str());
+            processCommand(cmd);
+            __scriptCommandIndex = (__scriptCommandIndex + 1) % __activeScriptCommands.size();
+        }
+    }
+
     // --- Handle Pending Off Command ---
     if (__pendingOff) {
         log_t("Processing Off command...");
@@ -545,8 +692,31 @@ void loop() {
     }
 
     // --- LED Strip Animation ---
-    // The LEDs only animate if the motor is logically running.
-    if (__isMotorRunning && __currentLogicalSpeed > 0) {
+    if (__isBlinkActive) {
+        unsigned long elapsed = millis() - __blinkStartTime;
+        unsigned long totalCycle = __blinkUpDuration + __blinkDownDuration;
+        if (totalCycle > 0) {
+            // Check if we have reached the target count for finite blinks
+            if (__blinkTargetCount > 0 && (elapsed / totalCycle) >= (unsigned long)__blinkTargetCount) {
+                __isBlinkActive = false;
+                __blinkTargetCount = 0;
+                FastLED.clear(true);
+            } else {
+                unsigned long cyclePos = elapsed % totalCycle;
+                uint8_t bri = 0;
+                if (cyclePos < __blinkUpDuration) {
+                    bri = map(cyclePos, 0, __blinkUpDuration, 0, __blinkMaxBri);
+                } else {
+                    unsigned long downElapsed = cyclePos - __blinkUpDuration;
+                    bri = map(downElapsed, 0, __blinkDownDuration, __blinkMaxBri, 0);
+                }
+                fill_solid(__leds, __NUM_LEDS, CHSV(__blinkHue, 255, bri));
+                FastLED.show();
+            }
+        }
+    } 
+    // Standard comet animation runs if blink is inactive and motor is running
+    else if (__isMotorRunning && __currentLogicalSpeed > 0) {
         // Use the absolute interval set by the user.
         unsigned long dynamicInterval = (unsigned long)max(1.0f, __ledIntervalMs);
 
