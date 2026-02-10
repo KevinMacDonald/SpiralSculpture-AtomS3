@@ -10,6 +10,28 @@
 #include <BLEUtils.h>
 #include <stdarg.h>
 
+/*
+ * --- Bluetooth Command Reference ---
+ * NOTE TO GEMINI: Please update these comments when commands are added, removed, or modified.
+ * Commands are sent as strings via the Command Characteristic UUID.
+ * 
+ * motor_speed:XXX    - Set motor logical speed (0-1000). Example: "motor_speed:500"
+ * motor_ramp:XXXX    - Set duration (ms) for a full speed ramp (0 to 1000). Example: "motor_ramp:4000"
+ * led_brightness:XX  - Set global master brightness percentage (0-100). Example: "led_brightness:75"
+ * led_background:H,B - Set background Hue (0-255) and Brightness % (0-50). Example: "led_background:160,20"
+ * led_tails:H,L,C    - Set Comet Hue (0-255), Tail Length (LEDs), and Count. Example: "led_tails:0,15,3"
+ * led_cycle_time:MS  - Set absolute time (ms) for one full LED revolution. Example: "led_cycle_time:5000"
+ * system_off         - Ramp down motor and blackout LEDs immediately.
+ * motor_start        - Start the motor using current speed settings.
+ * motor_stop         - Ramp down and stop the motor.
+ * system_reset       - Reset all parameters to setup() defaults and start.
+ * motor_reverse      - Smoothly ramp down, change direction, and ramp up.
+ * motor_speed_up     - Increase target speed setting by 50 units.
+ * motor_speed_down   - Decrease target speed setting by 50 units.
+ * led_cycle_up       - Increase LED cycle speed by 8% (Enables Manual Sync).
+ * led_cycle_down     - Decrease LED cycle speed by 8% (Enables Manual Sync).
+ */
+
 // Atomic H-Driver Pin Definitions
 static const int __IN1_PIN = 6;
 static const int __IN2_PIN = 7;
@@ -327,23 +349,23 @@ class CommandCallback : public BLECharacteristicCallbacks {
             std::string cmd = value.substr(0, colon_pos);
             int val = atoi(value.substr(colon_pos + 1).c_str());
 
-            if (cmd == "ms") {
-                // ms:XXX - Sets the motor's logical speed (0-1000).
+            if (cmd == "motor_speed") {
+                // motor_speed:XXX - Sets the motor's logical speed (0-1000).
                 val = constrain(val, 0, __LOGICAL_MAX_SPEED);
                 triggerSetSpeed(val);
-            } else if (cmd == "ramp") {
-                // ramp:XXXX - Sets the duration (in ms) for a full speed ramp (0 to 1000).
+            } else if (cmd == "motor_ramp") {
+                // motor_ramp:XXXX - Sets the duration (in ms) for a full speed ramp (0 to 1000).
                 val = constrain(val, 0, 10000);
                 __currentRampDuration = val;
-                log_t("Set Ramp Duration: %d", __currentRampDuration);
-            } else if (cmd == "brightness") {
-                // brightness:XX - Sets the global master brightness (0-100).
+                log_t("Set Motor Ramp Duration: %d", __currentRampDuration);
+            } else if (cmd == "led_brightness") {
+                // led_brightness:XX - Sets the global master brightness (0-100).
                 int brightness_pct = constrain(val, 0, 100);
                 __masterBrightness = (uint8_t)((brightness_pct * 255) / 100);
                 FastLED.setBrightness(__masterBrightness);
-                log_t("Master Brightness set to: %d%% (%d/255)", brightness_pct, __masterBrightness);
-            } else if (cmd == "back_color") {
-                // back_color:XXX,YY - Sets background Hue (0-255) and Brightness % (0-50).
+                log_t("LED Master Brightness set to: %d%% (%d/255)", brightness_pct, __masterBrightness);
+            } else if (cmd == "led_background") {
+                // led_background:XXX,YY - Sets background Hue (0-255) and Brightness % (0-50).
                 std::string params = value.substr(colon_pos + 1);
                 size_t comma_pos = params.find(',');
                 if (comma_pos != std::string::npos) {
@@ -351,10 +373,10 @@ class CommandCallback : public BLECharacteristicCallbacks {
                     int b_pct = atoi(params.substr(comma_pos + 1).c_str());
                     __bgHue = (uint8_t)constrain(h, 0, 255);
                     __bgBrightness = (uint8_t)((constrain(b_pct, 0, 50) * 255) / 100);
-                    log_t("Background set to Hue: %d, Brightness: %d%% (%d)", __bgHue, b_pct, __bgBrightness);
+                    log_t("LED Background set to Hue: %d, Brightness: %d%% (%d)", __bgHue, b_pct, __bgBrightness);
                 }
-            } else if (cmd == "tails") {
-                // tails:XXX,YY,ZZ - Sets Comet Hue (0-255), Tail Length (LEDs), and Comet Count.
+            } else if (cmd == "led_tails") {
+                // led_tails:XXX,YY,ZZ - Sets Comet Hue (0-255), Tail Length (LEDs), and Comet Count.
                 // Safety: Ignored if total lit LEDs (Count * Length) exceeds 80% of the strip.
                 std::string params = value.substr(colon_pos + 1);
                 size_t comma1 = params.find(',');
@@ -367,7 +389,7 @@ class CommandCallback : public BLECharacteristicCallbacks {
                         __cometHue = (uint8_t)constrain(h, 0, 255);
                         __cometTailLength = max(1, l);
                         __cometCount = max(1, c);
-                        log_t("Tails set: Hue %d, Length %d, Count %d", __cometHue, __cometTailLength, __cometCount);
+                        log_t("LED Tails set: Hue %d, Length %d, Count %d", __cometHue, __cometTailLength, __cometCount);
                     } else {
                         log_t("Tails command ignored: exceeds 80%% of strip.");
                     }
@@ -381,21 +403,21 @@ class CommandCallback : public BLECharacteristicCallbacks {
                     __ledIntervalMs = __manualLedIntervalMs;
                     log_t("LED Manual Sync set at speed %d. Step interval: %.2f ms", __manualSpeedReference, __ledIntervalMs);
                 }
-            } else if (cmd == "off") {
-                // off: - Ramps down the motor and kills LED animation immediately.
+            } else if (cmd == "system_off") {
+                // system_off: - Ramps down the motor and kills LED animation immediately.
                 __pendingOff = true;
             } else {
                 log_t("Unknown command prefix: %s", cmd.c_str());
             }
 
-        } else if (value == "off") {
-            // Handle "off" without a colon
+        } else if (value == "system_off") {
+            // Handle "system_off" without a colon
             __pendingOff = true;
         } else if (value == "motor_start") {
             triggerStart();
         } else if (value == "motor_stop") {
             triggerStop();
-        } else if (value == "start_defaults") {
+        } else if (value == "system_reset") {
             // Reset all parameters to setup() defaults
             __speedSetting = __LOGICAL_INITIAL_SPEED;
             __masterBrightness = 255;
