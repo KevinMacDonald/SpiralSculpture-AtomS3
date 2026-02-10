@@ -59,6 +59,8 @@ static int __currentLogicalSpeed = 0; // The actual current speed of the motor
 static int __speedSetting = __LOGICAL_INITIAL_SPEED; // The user's desired speed setting
 static int __targetLogicalSpeed = 0; // The immediate target for the current ramp
 static unsigned long __lastRampStepTime = 0;
+static int __rampStartSpeed = 0;      // Speed at the beginning of the current ramp maneuver
+static unsigned long __rampStartTime = 0; // Time when the current ramp maneuver started
 static unsigned long __rampStepDelay = 0;
 static bool __reverseAfterRampDown = false;
 
@@ -92,6 +94,11 @@ static int __cometCount = 3;           // Default number of moving points
 static float __ledIntervalMs = 20.0f;  // Absolute time between LED steps in ms
 static unsigned long __last_led_strip_update = 0;
 
+// --- Manual LED Sync State ---
+static bool __isManualLedInterval = false;    // Flag to override the sync table
+static float __manualLedIntervalMs = 0;       // The base interval set by the user
+static int __manualSpeedReference = 0;        // The logical speed at which the manual interval was set
+
 
 // --- Throttled Logging --- DO NOT REMOVE THIS. It is useful to have. 
 // A helper function for timestamped logs that can be throttled to prevent flooding the serial port.
@@ -118,6 +125,13 @@ static void log_t(const char* format, ...) {
  */
 void applySpeedSyncLookup(int speed) {
     if (__speedSyncTableSize < 2) return;
+
+    if (speed > 0 && __isManualLedInterval) {
+        // Scale the manually set interval based on the ratio of the reference speed to the new speed.
+        // This maintains the user's custom sync across speed changes and reversals.
+        __ledIntervalMs = __manualLedIntervalMs * ((float)__manualSpeedReference / (float)speed);
+        return;
+    }
 
     float targetRevTime = 0;
 
@@ -190,6 +204,8 @@ void updateRampTiming() {
 void triggerStart() {
     log_t("Triggering start...");
     if (!__isMotorRunning) {
+        __rampStartSpeed = __currentLogicalSpeed;
+        __rampStartTime = millis();
         __led_position = 0; // Start LED cycle at the beginning
         __targetLogicalSpeed = __speedSetting;
         applySpeedSyncLookup(__targetLogicalSpeed);
@@ -202,6 +218,8 @@ void triggerStart() {
 void triggerReverse() {
     log_t("Triggering smooth reverse...");
     if (__isMotorRunning) {
+        __rampStartSpeed = __currentLogicalSpeed;
+        __rampStartTime = millis();
         __reverseAfterRampDown = true;
         __targetLogicalSpeed = __LOGICAL_REVERSE_INTERMEDIATE_SPEED; // Ramp down to intermediate speed
         applySpeedSyncLookup(__targetLogicalSpeed);
@@ -219,6 +237,8 @@ void triggerSpeedUp() {
     log_t("Triggering speed up. New setting: %d", __speedSetting);
     if (__isMotorRunning)
     {
+        __rampStartSpeed = __currentLogicalSpeed;
+        __rampStartTime = millis();
         __targetLogicalSpeed = __speedSetting;
         applySpeedSyncLookup(__targetLogicalSpeed);
         updateRampTiming();
@@ -231,6 +251,8 @@ void triggerSpeedDown() {
     log_t("Triggering speed down. New setting: %d", __speedSetting);
     if (__isMotorRunning)
     {
+        __rampStartSpeed = __currentLogicalSpeed;
+        __rampStartTime = millis();
         __targetLogicalSpeed = __speedSetting;
         applySpeedSyncLookup(__targetLogicalSpeed);
         updateRampTiming();
@@ -240,6 +262,8 @@ void triggerSpeedDown() {
 
 void triggerStop() {
     log_t("Triggering stop...");
+    __rampStartSpeed = __currentLogicalSpeed;
+    __rampStartTime = millis();
     __targetLogicalSpeed = 0;
     updateRampTiming();
     __motorState = __MOTOR_RAMPING_DOWN;
@@ -255,6 +279,9 @@ void triggerSetSpeed(int newSpeed) {
         triggerStop();
         return;
     }
+
+    __rampStartSpeed = __currentLogicalSpeed;
+    __rampStartTime = millis();
 
     __targetLogicalSpeed = __speedSetting;
     applySpeedSyncLookup(__targetLogicalSpeed);
@@ -348,8 +375,11 @@ class CommandCallback : public BLECharacteristicCallbacks {
             } else if (cmd == "c") {
                 // c:XXXX - Sets the absolute time for one full revolution of the LED cycle in ms.
                 if (val > 0) {
-                    __ledIntervalMs = (float)val / (float)__LOGICAL_NUM_LEDS;
-                    log_t("LED Revolution time set to %d ms. Step interval: %.2f ms", val, __ledIntervalMs);
+                    __isManualLedInterval = true;
+                    __manualLedIntervalMs = (float)val / (float)__LOGICAL_NUM_LEDS;
+                    __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
+                    __ledIntervalMs = __manualLedIntervalMs;
+                    log_t("LED Manual Sync set at speed %d. Step interval: %.2f ms", __manualSpeedReference, __ledIntervalMs);
                 }
             } else if (cmd == "off") {
                 // off: - Ramps down the motor and kills LED animation immediately.
@@ -376,12 +406,18 @@ class CommandCallback : public BLECharacteristicCallbacks {
             // --- 2-character LED Cycle Commands ---
             if (value == "cu") {
                 // cu - Cycle Up: Increases LED animation speed by 8% (decreases interval).
+                __isManualLedInterval = true;
                 __ledIntervalMs *= 0.92f;
-                log_t("LED Cycle speed UP 8%%. Interval: %.2f ms", __ledIntervalMs);
+                __manualLedIntervalMs = __ledIntervalMs;
+                __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
+                log_t("LED Cycle speed UP 8%% (Manual). Interval: %.2f ms", __ledIntervalMs);
             } else if (value == "cd") {
                 // cd - Cycle Down: Decreases LED animation speed by 8% (increases interval).
+                __isManualLedInterval = true;
                 __ledIntervalMs *= 1.08f;
-                log_t("LED Cycle speed DOWN 8%%. Interval: %.2f ms", __ledIntervalMs);
+                __manualLedIntervalMs = __ledIntervalMs;
+                __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
+                log_t("LED Cycle speed DOWN 8%% (Manual). Interval: %.2f ms", __ledIntervalMs);
             }
         } else {
             log_t("Invalid command format: %s", value.c_str());
@@ -556,6 +592,10 @@ void loop() {
                         FastLED.show();
                     }
                     log_t("Ramp complete. Current Speed: %d", __currentLogicalSpeed);
+                    log_t("Ramp complete. %s, From %d to %d in %lu millis", 
+                          __isDirectionClockwise ? "Clockwise" : "Counter-Clockwise",
+                          __rampStartSpeed, __currentLogicalSpeed, 
+                          millis() - __rampStartTime);
                 }
             }
         }
