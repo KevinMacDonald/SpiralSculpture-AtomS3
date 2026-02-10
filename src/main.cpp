@@ -431,11 +431,11 @@ class CommandCallback : public BLECharacteristicCallbacks {
             FastLED.setBrightness(__masterBrightness);
             triggerSetSpeed(__speedSetting);
             log_t("System reset to defaults and started.");
-        } else if (value == "reverse") {
+        } else if (value == "motor_reverse") {
             triggerReverse();
-        } else if (value == "speed_up") {
+        } else if (value == "motor_speed_up") {
             triggerSpeedUp();
-        } else if (value == "speed_down") {
+        } else if (value == "motor_speed_down") {
             triggerSpeedDown();
         } else if (value == "led_cycle_up") {
             __isManualLedInterval = true;
