@@ -125,19 +125,27 @@ static int __manualSpeedReference = 0;        // The logical speed at which the 
 // --- Throttled Logging --- DO NOT REMOVE THIS. It is useful to have. 
 // A helper function for timestamped logs that can be throttled to prevent flooding the serial port.
 // Set MIN_LOG_GAP_MS to a value like 50 or 200 to enable throttling.
-static unsigned long __MIN_LOG_GAP_MS = 50; // Reduced gap to allow command + action logs to appear.
+static unsigned long __MIN_LOG_GAP_MS = 100; // Throttle identical messages within this window.
 static unsigned long __lastLogTimestamp = 0;
+static char __lastLogBuffer[256] = "";
 
 static void log_t(const char* format, ...) {
     unsigned long now = millis();
-    if (__MIN_LOG_GAP_MS == 0 || (now - __lastLogTimestamp > __MIN_LOG_GAP_MS)) {
-        char buf[256];
-        va_list args;
-        va_start(args, format);
-        vsnprintf(buf, sizeof(buf), format, args);
-        va_end(args);
+    char buf[256];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+
+    // Log if: throttling is disabled, OR the gap has passed, OR the message is different from the last one.
+    if (__MIN_LOG_GAP_MS == 0 || 
+        (now - __lastLogTimestamp > __MIN_LOG_GAP_MS) || 
+        strcmp(buf, __lastLogBuffer) != 0) {
+        
         Serial.printf("%lu ms: %s\n", now, buf);
         __lastLogTimestamp = now;
+        strncpy(__lastLogBuffer, buf, sizeof(__lastLogBuffer) - 1);
+        __lastLogBuffer[sizeof(__lastLogBuffer) - 1] = '\0';
     }
 }
 
