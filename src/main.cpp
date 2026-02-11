@@ -157,7 +157,11 @@ static std::vector<std::string> __activeScriptCommands;
 
 static const std::vector<std::string> __script_funky = {
     "led_reset",
+    "hold:10000",
     "led_background:0,20",
+    "led_rainbow",
+    "hold:20001",
+    "led_tails:0,15,3",
     "motor_speed:500",
     "hold:3000",
     "led_tails:0,15,3",
@@ -222,7 +226,10 @@ static const std::vector<std::string> __script_funky = {
     "led_reset",
     "led_tails:0,15,3",
     "led_sine_pulse:0,100",
-    "hold:10003"
+    "hold:10003",
+    "led_tails:0,5,10",
+    "led_cycle_time:500",
+    "hold:10004",
 };
 
 // --- Throttled Logging --- DO NOT REMOVE THIS. It is useful to have. 
