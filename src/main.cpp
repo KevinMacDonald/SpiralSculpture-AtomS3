@@ -35,6 +35,10 @@
  * run_script:NAME    - Start a named script (e.g., "run_script:funky").
  * hold:XXXX          - (Script only) Wait XXXX ms before next command.
  * led_blink:H,B,U,D,C - Pulse Hue (0-255), Brightness % (0-100), Ramp Up (ms), Ramp Down (ms), Count (0=loop).
+ * led_sine_hue:L,H   - Oscillate Comet Hue between L and H (0-255) synced to motor speed.
+ * led_rainbow        - Cycle Comet Hue through full rainbow synced to motor speed.
+ * led_sine_pulse:L,H - Oscillate Master Brightness between L and H % (0-100) synced to motor speed.
+ * led_reset          - Clear all dynamic effects, background, and comets to black.
  */
 
 // Atomic H-Driver Pin Definitions
@@ -135,6 +139,15 @@ static unsigned long __blinkDownDuration = 1000;
 static unsigned long __blinkStartTime = 0;
 static int __blinkTargetCount = 0; // 0 means loop indefinitely
 
+// --- Dynamic LED State (Synced to Motor RPM) ---
+static bool __isHueSineActive = false;
+static uint8_t __hueSineLow = 0;
+static uint8_t __hueSineHigh = 255;
+static bool __isRainbowActive = false;
+static bool __isPulseSineActive = false;
+static uint8_t __pulseSineLow = 0;
+static uint8_t __pulseSineHigh = 255;
+
 // --- Scripting Engine State ---
 static bool __isScriptRunning = false;
 static int __scriptCommandIndex = 0;
@@ -143,13 +156,15 @@ static unsigned long __scriptHoldDuration = 0;
 static std::vector<std::string> __activeScriptCommands;
 
 static const std::vector<std::string> __script_funky = {
+    "led_reset",
+    "led_background:0,20",
     "motor_speed:500",
     "hold:3000",
     "led_tails:0,15,3",
     "hold:3000",
     "motor_reverse",
     "hold:4000",
-    "motor_speed:800",
+    "motor_speed:700",
     "led_background:32,10",
     "hold:1000",
     "led_background:64,10",
@@ -160,7 +175,8 @@ static const std::vector<std::string> __script_funky = {
     "hold:1000",
     "led_tails:128,10,5",
     "motor_reverse",
-    "hold:10000",
+    "motor_speed:400",
+    "hold:5000",
     "motor_speed:1000",
     "led_blink:0,70,200,400,10",
     "motor_speed:400",
@@ -184,17 +200,29 @@ static const std::vector<std::string> __script_funky = {
     "led_cycle_time:500",
     "hold:7009",
     "led_tails:0,15,2",
-    "led_cycle_time:5000",
+    "led_cycle_time:5200",
     "hold:3010",
     "led_tails:0,15,3",
-    "led_cycle_time:5000",
+    "led_cycle_time:5200",
     "hold:3011",
     "led_tails:0,15,4",
-    "led_cycle_time:5000",
+    "led_cycle_time:5200",
     "hold:3012",
     "led_tails:0,15,5",
-    "led_cycle_time:5000",
-    "hold:3013"
+    "led_cycle_time:5200",
+    "hold:3013",
+    "led_reset",
+    "led_tails:0,15,3",
+    "led_rainbow",
+    "hold:10001",
+    "led_reset",
+    "led_tails:0,15,3",
+    "led_sine_hue:0,160",
+    "hold:10002",
+    "led_reset",
+    "led_tails:0,15,3",
+    "led_sine_pulse:0,100",
+    "hold:10003"
 };
 
 // --- Throttled Logging --- DO NOT REMOVE THIS. It is useful to have. 
@@ -429,6 +457,7 @@ void processCommand(std::string value) {
             __currentRampDuration = val;
             log_t("Set Motor Ramp Duration: %d", __currentRampDuration);
         } else if (cmd == "led_brightness") {
+            __isPulseSineActive = false;
             int brightness_pct = constrain(val, 0, 100);
             __masterBrightness = (uint8_t)((brightness_pct * 255) / 100);
             FastLED.setBrightness(__masterBrightness);
@@ -453,10 +482,10 @@ void processCommand(std::string value) {
                 int h = atoi(params.substr(0, comma1).c_str());
                 int l = atoi(params.substr(comma1 + 1, comma2 - (comma1 + 1)).c_str());
                 int c = atoi(params.substr(comma2 + 1).c_str());
-                if (c * l <= __LOGICAL_NUM_LEDS * 0.8) {
+                if (c == 0 || (c * l <= __LOGICAL_NUM_LEDS * 0.8)) {
                     __cometHue = (uint8_t)constrain(h, 0, 255);
                     __cometTailLength = max(1, l);
-                    __cometCount = max(1, c);
+                    __cometCount = max(0, c);
                     log_t("LED Tails set: Hue %d, Length %d, Count %d", __cometHue, __cometTailLength, __cometCount);
                 } else {
                     log_t("Tails command ignored: exceeds 80%% of strip.");
@@ -521,6 +550,37 @@ void processCommand(std::string value) {
                 __blinkStartTime = millis();
                 log_t("LED Blink set: Hue %d, MaxBri %d, Up %lu, Down %lu, Count %d", __blinkHue, b, __blinkUpDuration, __blinkDownDuration, __blinkTargetCount);
             }
+        } else if (cmd == "led_sine_hue") {
+            // led_sine_hue:LOW,HIGH
+            std::string params = value.substr(colon_pos + 1);
+            size_t c1 = params.find(',');
+            if (c1 != std::string::npos) {
+                __hueSineLow = (uint8_t)atoi(params.substr(0, c1).c_str());
+                __hueSineHigh = (uint8_t)atoi(params.substr(c1 + 1).c_str());
+                __isHueSineActive = true;
+                __isRainbowActive = false;
+                if (__cometCount == 0) __cometCount = 1; // Ensure visibility
+                log_t("LED Sine Hue: Range %d-%d (Sync BPM)", __hueSineLow, __hueSineHigh);
+            }
+        } else if (cmd == "led_sine_pulse") {
+            // led_sine_pulse:LOW,HIGH
+            std::string params = value.substr(colon_pos + 1);
+            size_t c1 = params.find(',');
+            if (c1 != std::string::npos) {
+                int low_pct = atoi(params.substr(0, c1).c_str());
+                int high_pct = atoi(params.substr(c1 + 1).c_str());
+                
+                __pulseSineLow = (uint8_t)((constrain(low_pct, 0, 100) * 255) / 100);
+                __pulseSineHigh = (uint8_t)((constrain(high_pct, 0, 100) * 255) / 100);
+                
+                __isPulseSineActive = true;
+                __isBlinkActive = false;
+                // If everything is dark, enable background so the pulse is visible
+                if (__bgBrightness == 0 && __cometCount == 0) {
+                    __bgBrightness = 76; // Default to 30% floor
+                }
+                log_t("LED Sine Pulse: Range %d%%-%d%% (Sync BPM)", low_pct, high_pct);
+            }
         } else {
             log_t("Unknown command prefix: %s", cmd.c_str());
         }
@@ -528,6 +588,23 @@ void processCommand(std::string value) {
     } else if (value == "system_off") {
         __isBlinkActive = false;
         __pendingOff = true;
+    } else if (value == "led_rainbow") {
+        __isRainbowActive = true;
+        __isHueSineActive = false;
+        if (__cometCount == 0) __cometCount = 1; // Ensure visibility
+        log_t("LED Rainbow Mode: Sync BPM");
+    } else if (value == "led_reset") {
+        __isBlinkActive = false;
+        __isHueSineActive = false;
+        __isRainbowActive = false;
+        __isPulseSineActive = false;
+        __bgBrightness = 0;
+        __cometCount = 0;
+        __isManualLedInterval = false;
+        __masterBrightness = 255;
+        FastLED.setBrightness(__masterBrightness);
+        FastLED.clear(true);
+        log_t("LEDs reset to black/static.");
     } else if (value == "motor_start") {
         triggerStart();
     } else if (value == "motor_stop") {
@@ -535,6 +612,9 @@ void processCommand(std::string value) {
     } else if (value == "system_reset") {
         __isScriptRunning = false;
         __isBlinkActive = false;
+        __isHueSineActive = false;
+        __isRainbowActive = false;
+        __isPulseSineActive = false;
         __speedSetting = __LOGICAL_INITIAL_SPEED;
         __masterBrightness = 255;
         __bgHue = 160;
@@ -677,7 +757,7 @@ void loop() {
         __bleCommandAvailable = false;
 
         // Only allow system_reset to interrupt a script
-        if (cmd == "system_reset") {
+        if (cmd == "system_reset" || cmd == "led_reset") {
             __isScriptRunning = false;
             processCommand(cmd);
         } else if (!__isScriptRunning) {
@@ -710,6 +790,24 @@ void loop() {
     }
 
     // --- LED Strip Animation ---
+    // 1. Update dynamic parameters (Sine/Rainbow) for the comet and master brightness
+    if (__isRainbowActive || __isHueSineActive || __isPulseSineActive) {
+        float revTime = __ledIntervalMs * (float)__LOGICAL_NUM_LEDS;
+        // Calculate BPM in Q8.8 fixed point for higher precision beat functions.
+        // 60000ms * 256 = 15360000
+        uint16_t bpm88 = (revTime > 0) ? (uint16_t)(15360000.0f / revTime) : 0;
+
+        if (__isRainbowActive) {
+            __cometHue = beat88(bpm88) >> 8;
+        } else if (__isHueSineActive) {
+            __cometHue = (uint8_t)beatsin88(bpm88, __hueSineLow, __hueSineHigh);
+        }
+
+        if (__isPulseSineActive) {
+            FastLED.setBrightness((uint8_t)beatsin88(bpm88, __pulseSineLow, __pulseSineHigh));
+        }
+    }
+
     if (__isBlinkActive) {
         unsigned long elapsed = millis() - __blinkStartTime;
         unsigned long totalCycle = __blinkUpDuration + __blinkDownDuration;
