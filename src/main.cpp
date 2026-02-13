@@ -32,6 +32,7 @@
  * motor_speed_down   - Decrease target speed setting by 50 units.
  * led_cycle_up       - Increase LED cycle speed by 8% (Enables Manual Sync).
  * led_cycle_down     - Decrease LED cycle speed by 8% (Enables Manual Sync).
+ * led_reverse        - Toggle the direction of LED animation cycling.
  * run_script:NAME    - Start a named script (e.g., "run_script:funky").
  * hold:XXXX          - (Script only) Wait XXXX ms before next command.
  * led_blink:H,B,U,D,C - Pulse Hue (0-255), Brightness % (0-100), Ramp Up (ms), Ramp Down (ms), Count (0=loop).
@@ -116,6 +117,7 @@ static const int __speedSyncTableSize = sizeof(__speedSyncTable) / sizeof(SpeedS
 static CRGB __onboard_led[1];
 static CRGB __leds[__NUM_LEDS];
 static int __led_position = 0;
+static bool __isLedReversed = false;
 static uint8_t __masterBrightness = 255; // Global master brightness (0-255)
 static uint8_t __bgHue = 160;          // Default to Blue (160)
 static uint8_t __bgBrightness = 76;    // Default to 30% (76/255)
@@ -623,6 +625,7 @@ void processCommand(std::string value) {
         __isHueSineActive = false;
         __isRainbowActive = false;
         __isPulseSineActive = false;
+        __isLedReversed = false;
         __speedSetting = __LOGICAL_INITIAL_SPEED;
         __masterBrightness = 255;
         __bgHue = 160;
@@ -656,6 +659,9 @@ void processCommand(std::string value) {
         __manualLedIntervalMs = __ledIntervalMs;
         __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
         log_t("LED Cycle speed DOWN 8%% (Manual). Interval: %.2f ms", __ledIntervalMs);
+    } else if (value == "led_reverse") {
+        __isLedReversed = !__isLedReversed;
+        log_t("LED direction reversed. New state: %s", __isLedReversed ? "Reversed" : "Normal");
     } else {
         log_t("Invalid command format: %s", value.c_str());
     }
@@ -867,10 +873,14 @@ void loop() {
                 __leds[i].b = max(__leds[i].b, bgColor.b);
             }
 
-            if (__isDirectionClockwise) {
-                __led_position = (__led_position - 1 + __LOGICAL_NUM_LEDS) % __LOGICAL_NUM_LEDS;
-            } else {
+            // Determine LED cycling direction. Default is forward (incrementing) when motor is CCW.
+            // __isLedReversed toggles this behavior.
+            bool led_direction_is_forward = !__isDirectionClockwise ^ __isLedReversed;
+
+            if (led_direction_is_forward) {
                 __led_position = (__led_position + 1) % __LOGICAL_NUM_LEDS;
+            } else {
+                __led_position = (__led_position - 1 + __LOGICAL_NUM_LEDS) % __LOGICAL_NUM_LEDS;
             }
 
             // 3. Draw the heads (spaced evenly)
