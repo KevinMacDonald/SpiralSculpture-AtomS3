@@ -57,10 +57,15 @@
     - VIBE, TENSION, and CLIMAX can cycle through to fill in the duration. 
     - Any composition should at least have one pass through everything, which implies a min duration of 5 minutes for auto. That's 
       about the length of modern pop song. 
-    - call out clearly in terminal output " -------------- BEGIN: <phase name> ----------------"  
+    - How about using motor_reverse to signal phase transitions and reserving the usage of that for that purpose?
+    - call out clearly in terminal output " -------------- BEGIN: <phase name> ----------------"
+    - Upon completion of an auto-generated script, compose another script of the same duration and execute.
+
+    Upon completion of an auto-generated script, compose another script of the same duration and execute. 
 
 */
 #include "auto_generator.h"
+#include "shared.h"
 #include <Arduino.h>
 #include <vector>
 #include <string>
@@ -70,9 +75,6 @@
 #define AUTO_LOG(format, ...) Serial.printf("%lu ms: [AutoGenerator] " format "\n", millis(), ##__VA_ARGS__)
 
 namespace AutoGenerator {
-
-// A reasonable guess for ramp duration for timing calculations.
-const int APPROX_RAMP_DURATION_MS = 4000;
 
 // Helper to create a command string from various parameter types
 std::string format_command(const char* cmd, long val) {
@@ -99,50 +101,6 @@ std::string format_command(const char* cmd, int val1, int val2, int val3, int va
     return std::string(buffer);
 }
 
-// --- Speed Sync Lookup Table (from main.cpp) ---
-struct SpeedSyncPair {
-    int logicalSpeed;
-    int revTimeMs;
-};
-
-static const SpeedSyncPair __speedSyncTable[] = {
-    { 400, 5200 },
-    { 700, 2096 },
-    { 1000, 1250 }
-};
-static const int __speedSyncTableSize = sizeof(__speedSyncTable) / sizeof(SpeedSyncPair);
-
-// Estimates the motor revolution time based on the same logic as main.cpp's applySpeedSyncLookup.
-long estimateRevolutionTimeMs(int speed) {
-    if (__speedSyncTableSize < 2) return 2000; // Fallback
-
-    float targetRevTime = 0;
-
-    if (speed <= __speedSyncTable[0].logicalSpeed) {
-        // Linear extrapolation for speeds below the table's minimum
-        float m = (float)(__speedSyncTable[1].revTimeMs - __speedSyncTable[0].revTimeMs) /
-                  (float)(__speedSyncTable[1].logicalSpeed - __speedSyncTable[0].logicalSpeed);
-        targetRevTime = __speedSyncTable[0].revTimeMs + m * (speed - __speedSyncTable[0].logicalSpeed);
-    } else if (speed >= __speedSyncTable[__speedSyncTableSize - 1].logicalSpeed) {
-        // Linear extrapolation for speeds above the table's maximum
-        int last = __speedSyncTableSize - 1;
-        float m = (float)(__speedSyncTable[last].revTimeMs - __speedSyncTable[last-1].revTimeMs) /
-                  (float)(__speedSyncTable[last].logicalSpeed - __speedSyncTable[last-1].logicalSpeed);
-        targetRevTime = __speedSyncTable[last].revTimeMs + m * (speed - __speedSyncTable[last].logicalSpeed);
-    } else {
-        // Piecewise linear interpolation for speeds within the table's range
-        for (int i = 0; i < __speedSyncTableSize - 1; i++) {
-            if (speed >= __speedSyncTable[i].logicalSpeed && speed <= __speedSyncTable[i+1].logicalSpeed) {
-                float fraction = (float)(speed - __speedSyncTable[i].logicalSpeed) /
-                                 (float)(__speedSyncTable[i+1].logicalSpeed - __speedSyncTable[i].logicalSpeed);
-                targetRevTime = __speedSyncTable[i].revTimeMs + fraction * (__speedSyncTable[i+1].revTimeMs - __speedSyncTable[i].revTimeMs);
-                break;
-            }
-        }
-    }
-    return (long)max(500.0f, targetRevTime); // Ensure a minimum reasonable time
-}
-
 // Per guidance, the generator now follows a musical structure.
 enum MusicalPhase {
     INTRODUCTION,
@@ -160,9 +118,8 @@ std::vector<std::string> generateScript(int duration_minutes) {
 
     long total_duration_ms = duration_minutes * 60L * 1000L;
 
-    // --- Musical Structure Durations ---
+    // --- Musical Structure Durations & Overview ---
     long intro_duration_ms = 30 * 1000L;
-    // The main body (Vibe/Tension/Climax) will fill the time between intro and outro.
     long cool_down_duration_ms = 60 * 1000L;
     long min_full_show_ms = intro_duration_ms + 120 * 1000L + cool_down_duration_ms; // Approx 3.5 mins for one cycle
 
@@ -173,6 +130,15 @@ std::vector<std::string> generateScript(int duration_minutes) {
         intro_duration_ms *= scale_factor;
         cool_down_duration_ms *= scale_factor;
     }
+
+    long main_body_duration_ms = total_duration_ms - intro_duration_ms - cool_down_duration_ms;
+    if (main_body_duration_ms < 0) main_body_duration_ms = 0;
+
+    const long avg_vibe_ms = (25000 + 45001) / 2;
+    const long avg_tension_ms = (15000 + 25001) / 2;
+    const long avg_climax_ms = (10000 + 20001) / 2;
+    const long avg_cycle_ms = avg_vibe_ms + avg_tension_ms + avg_climax_ms;
+    int num_cycles = (avg_cycle_ms > 0) ? (main_body_duration_ms / avg_cycle_ms) : 0;
 
     long accumulated_duration_ms = 0;
 
@@ -193,13 +159,26 @@ std::vector<std::string> generateScript(int duration_minutes) {
     AUTO_LOG("Generating auto-script for %d minutes (%ld ms)...", duration_minutes, total_duration_ms);
     AUTO_LOG("Heap: %ldB free. Dynamic max commands set to: %d", free_heap, max_commands);
 
+    AUTO_LOG("Composition Overview for %d minutes:", duration_minutes);
+    AUTO_LOG("  - INTRODUCTION: ~%lds", intro_duration_ms / 1000);
+    AUTO_LOG("  - MAIN BODY:    ~%ldm", main_body_duration_ms / 60000);
+    if (num_cycles > 0) {
+        AUTO_LOG("      - %d cycles of:", num_cycles);
+        AUTO_LOG("        - VIBE:    ~%lds", avg_vibe_ms / 1000);
+        AUTO_LOG("        - TENSION: ~%lds", avg_tension_ms / 1000);
+        AUTO_LOG("        - CLIMAX:  ~%lds", avg_climax_ms / 1000);
+    } else if (main_body_duration_ms > 0) {
+        AUTO_LOG("      - Partial cycle");
+    }
+    AUTO_LOG("  - COOL_DOWN:    ~%lds", cool_down_duration_ms / 1000);
+
     script.push_back("system_reset");
     script.push_back("hold:1000");
     accumulated_duration_ms += 1000;
 
     // --- 1. INTRODUCTION ---
     if (intro_duration_ms > 1000) {
-        AUTO_LOG("Generating Phase: INTRODUCTION");
+        script.push_back("log_phase:INTRODUCTION");
         long intro_remaining_ms = intro_duration_ms;
         script.push_back("motor_speed:0");
         script.push_back("led_reset");
@@ -228,7 +207,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
         // --- Generate a scene based on the current musical phase ---
         switch (currentPhase) {
             case VIBE: {
-                AUTO_LOG("Generating Phase: VIBE");
+                script.push_back("log_phase:VIBE");
                 scene_duration_ms = random(25000, 45001); // Longer, more stable scenes
 
                 // Colors: Harmonious (Analogous/Monochromatic)
@@ -247,7 +226,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
 
                 // Per guidance, explore longer cycle times
                 if (random(100) < 40) { // 40% chance to set a custom cycle time
-                    long est_rev_time = estimateRevolutionTimeMs(motor_speed);
+                    long est_rev_time = calculate_rev_time_ms(motor_speed);
                     float multiplier = (float)random(100, 201) / 100.0f; // 1.0x to 2.0x
                     script.push_back(format_command("led_cycle_time", (long)(est_rev_time * multiplier)));
                 }
@@ -261,7 +240,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
             }
 
             case TENSION: {
-                AUTO_LOG("Generating Phase: TENSION");
+                script.push_back("log_phase:TENSION");
                 scene_duration_ms = random(15000, 25001); // Medium length, building scenes
 
                 // Colors: High-contrast (Complementary)
@@ -275,7 +254,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
 
                 // Per guidance, cycle time >= motor revolution time
                 if (random(100) < 75) { // 75% chance to set a custom cycle time
-                    long est_rev_time = estimateRevolutionTimeMs(motor_speed);
+                    long est_rev_time = calculate_rev_time_ms(motor_speed);
                     float multiplier = (float)random(100, 151) / 100.0f; // 1.0x to 1.5x
                     script.push_back(format_command("led_cycle_time", (long)(est_rev_time * multiplier)));
                 }
@@ -283,13 +262,18 @@ std::vector<std::string> generateScript(int duration_minutes) {
                 if (random(100) < 60) { // Pulsing brightness effect
                     script.push_back(format_command("led_sine_pulse", (int)random(20, 51), (int)random(80, 101)));
                 }
-                if (random(100) < 20) script.push_back("led_reverse");
+
+                // Per guidance, use motor_reverse to signal the transition to CLIMAX
+                if (random(100) < 75) { // 75% chance to reverse into the climax
+                    script.push_back("motor_reverse");
+                    accumulated_duration_ms += DEFAULT_RAMP_DURATION_MS + 1000;
+                }
                 currentPhase = CLIMAX; // Transition to next phase
                 break;
             }
 
             case CLIMAX: {
-                AUTO_LOG("Generating Phase: CLIMAX");
+                script.push_back("log_phase:CLIMAX");
                 scene_duration_ms = random(10000, 20001); // Shorter, punchier scenes
                 script.push_back(format_command("motor_speed", (long)random(900, 1001))); // Max speed
                 
@@ -304,9 +288,10 @@ std::vector<std::string> generateScript(int duration_minutes) {
                     scene_duration_ms = 300 * blink_count + 1000; // Adjust hold for blink duration
                 }
 
-                if (random(100) < 50) {
+                // Per guidance, use motor_reverse to signal the transition out of CLIMAX
+                if (random(100) < 40) { // 40% chance to reverse out of the climax
                     script.push_back("motor_reverse");
-                    accumulated_duration_ms += APPROX_RAMP_DURATION_MS + 1000;
+                    accumulated_duration_ms += DEFAULT_RAMP_DURATION_MS + 1000;
                 }
                 currentPhase = VIBE; // Transition back to start
                 break;
@@ -321,7 +306,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
 
     // --- 3. COOL DOWN ---
     if (cool_down_duration_ms > 1000) {
-        AUTO_LOG("Generating Phase: COOL_DOWN");
+        script.push_back("log_phase:COOL_DOWN");
         script.push_back("led_reset");
         script.push_back(format_command("motor_speed", (long)random(400, 501)));
         script.push_back(format_command("led_background", (int)random(256), (int)random(5, 15))); // Dim background

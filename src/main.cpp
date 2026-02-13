@@ -9,6 +9,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <stdarg.h>
+#include "shared.h"
 #include "auto_generator.h"
 #include <vector>
 #include <string>
@@ -38,6 +39,7 @@
  * auto_mode:MMM      - Generate and run a script for MMM minutes.
  * auto_mode_debug:MMM - Generate and print a script for MMM minutes without running.
  * hold:XXXX          - (Script only) Wait XXXX ms before next command.
+ * log_phase:NAME     - (Script only, internal) Log a musical phase marker to the terminal.
  * led_blink:H,B,U,D,C - Pulse Hue (0-255), Brightness % (0-100), Ramp Up (ms), Ramp Down (ms), Count (0=loop).
  * led_sine_hue:L,H   - Oscillate Comet Hue between L and H (0-255) synced to motor speed.
  * led_rainbow        - Cycle Comet Hue through full rainbow synced to motor speed.
@@ -66,8 +68,7 @@ static const int __LOGICAL_REVERSE_INTERMEDIATE_SPEED = 200; // The speed to ram
 
 // Ramping settings
 static const int __RAMP_STEP = 5;            // How much to change speed in each ramp step
-static const int __DEFAULT_RAMP_DURATION_MS = 4000; // Default duration for a full ramp
-static int __currentRampDuration = __DEFAULT_RAMP_DURATION_MS; // Variable to change ramp duration (in milliseconds)
+static int __currentRampDuration = DEFAULT_RAMP_DURATION_MS; // Variable to change ramp duration (in milliseconds)
 
 // --- LED Strip Settings ---
 static const int __ONBOARD_LED_PIN = 35;
@@ -104,17 +105,13 @@ static bool __isDirectionClockwise = false; //runs a bit quieter in this directi
 static bool __isMotorRunning = false;
 
 // --- Speed Sync Lookup Table ---
-struct SpeedSyncPair {
-    int logicalSpeed;
-    int revTimeMs;
-};
-
-static const SpeedSyncPair __speedSyncTable[] = {
+// This table is now defined globally and shared with auto_generator.cpp
+const SpeedSyncPair g_speedSyncTable[] = {
     { 400, 5200 },
     { 700, 2096 },
     { 1000, 1250 }
 };
-static const int __speedSyncTableSize = sizeof(__speedSyncTable) / sizeof(SpeedSyncPair);
+const int g_speedSyncTableSize = sizeof(g_speedSyncTable) / sizeof(SpeedSyncPair);
 
 // --- LED Strip Objects & State ---
 static CRGB __onboard_led[1];
@@ -159,6 +156,8 @@ static int __scriptCommandIndex = 0;
 static unsigned long __scriptLastCommandTime = 0;
 static unsigned long __scriptHoldDuration = 0;
 static std::vector<std::string> __activeScriptCommands;
+static bool __isAutoModeActive = false;
+static int __autoModeDurationMinutes = 0;
 
 static const std::vector<std::string> __script_funky = {
     "led_reset",
@@ -267,13 +266,43 @@ static void log_t(const char* format, ...) {
     }
 }
 
+// Calculates the estimated revolution time in ms for a given logical speed.
+// This logic is shared between the main loop (for LED sync) and the auto-generator.
+long calculate_rev_time_ms(int speed) {
+    if (g_speedSyncTableSize < 2) return 2000; // Fallback
+    
+    float targetRevTime = 0;
+
+    if (speed <= g_speedSyncTable[0].logicalSpeed) {
+        // Linear extrapolation using the first segment
+        float m = (float)(g_speedSyncTable[1].revTimeMs - g_speedSyncTable[0].revTimeMs) /
+                  (float)(g_speedSyncTable[1].logicalSpeed - g_speedSyncTable[0].logicalSpeed);
+        targetRevTime = g_speedSyncTable[0].revTimeMs + m * (speed - g_speedSyncTable[0].logicalSpeed);
+    } else if (speed >= g_speedSyncTable[g_speedSyncTableSize - 1].logicalSpeed) {
+        // Linear extrapolation using the last segment
+        int last = g_speedSyncTableSize - 1;
+        float m = (float)(g_speedSyncTable[last].revTimeMs - g_speedSyncTable[last-1].revTimeMs) /
+                  (float)(g_speedSyncTable[last].logicalSpeed - g_speedSyncTable[last-1].logicalSpeed);
+        targetRevTime = g_speedSyncTable[last].revTimeMs + m * (speed - g_speedSyncTable[last].logicalSpeed);
+    } else {
+        // Piecewise linear interpolation
+        for (int i = 0; i < g_speedSyncTableSize - 1; i++) {
+            if (speed >= g_speedSyncTable[i].logicalSpeed && speed <= g_speedSyncTable[i+1].logicalSpeed) {
+                float fraction = (float)(speed - g_speedSyncTable[i].logicalSpeed) /
+                                 (float)(g_speedSyncTable[i+1].logicalSpeed - g_speedSyncTable[i].logicalSpeed);
+                targetRevTime = g_speedSyncTable[i].revTimeMs + fraction * (g_speedSyncTable[i+1].revTimeMs - g_speedSyncTable[i].revTimeMs);
+                break;
+            }
+        }
+    }
+    return (long)max(500.0f, targetRevTime); // Ensure a minimum reasonable time
+}
+
 /**
  * @brief Looks up the target speed in the sync table and updates the LED interval.
  * If no match is found, it falls back to the interpolated calculation method.
  */
 void applySpeedSyncLookup(int speed) {
-    if (__speedSyncTableSize < 2) return;
-
     if (speed > 0 && __isManualLedInterval) {
         // Scale the manually set interval based on the ratio of the reference speed to the new speed.
         // This maintains the user's custom sync across speed changes and reversals.
@@ -281,31 +310,7 @@ void applySpeedSyncLookup(int speed) {
         return;
     }
 
-    float targetRevTime = 0;
-
-    if (speed <= __speedSyncTable[0].logicalSpeed) {
-        // Linear extrapolation using the first segment
-        float m = (float)(__speedSyncTable[1].revTimeMs - __speedSyncTable[0].revTimeMs) /
-                  (float)(__speedSyncTable[1].logicalSpeed - __speedSyncTable[0].logicalSpeed);
-        targetRevTime = __speedSyncTable[0].revTimeMs + m * (speed - __speedSyncTable[0].logicalSpeed);
-    } else if (speed >= __speedSyncTable[__speedSyncTableSize - 1].logicalSpeed) {
-        // Linear extrapolation using the last segment
-        int last = __speedSyncTableSize - 1;
-        float m = (float)(__speedSyncTable[last].revTimeMs - __speedSyncTable[last-1].revTimeMs) /
-                  (float)(__speedSyncTable[last].logicalSpeed - __speedSyncTable[last-1].logicalSpeed);
-        targetRevTime = __speedSyncTable[last].revTimeMs + m * (speed - __speedSyncTable[last].logicalSpeed);
-    } else {
-        // Piecewise linear interpolation
-        for (int i = 0; i < __speedSyncTableSize - 1; i++) {
-            if (speed >= __speedSyncTable[i].logicalSpeed && speed <= __speedSyncTable[i+1].logicalSpeed) {
-                float fraction = (float)(speed - __speedSyncTable[i].logicalSpeed) /
-                                 (float)(__speedSyncTable[i+1].logicalSpeed - __speedSyncTable[i].logicalSpeed);
-                targetRevTime = __speedSyncTable[i].revTimeMs + fraction * (__speedSyncTable[i+1].revTimeMs - __speedSyncTable[i].revTimeMs);
-                break;
-            }
-        }
-    }
-
+    float targetRevTime = calculate_rev_time_ms(speed);
     __ledIntervalMs = targetRevTime / (float)__LOGICAL_NUM_LEDS;
 }
 
@@ -524,6 +529,7 @@ void processCommand(std::string value) {
                 __scriptLastCommandTime = millis();
                 __scriptHoldDuration = 0;
                 __isScriptRunning = true;
+                __isAutoModeActive = false; // This is not an auto-mode script
                 log_t("Script started: funky");
             }
         } else if (cmd == "auto_mode" || cmd == "auto_mode_debug") {
@@ -531,6 +537,7 @@ void processCommand(std::string value) {
 
             // Stop any currently running script
             __isScriptRunning = false;
+            __isAutoModeActive = false; // Stop any previous auto mode loop
 
             __activeScriptCommands = AutoGenerator::generateScript(duration_minutes);
 
@@ -539,14 +546,21 @@ void processCommand(std::string value) {
                 __scriptLastCommandTime = millis();
                 __scriptHoldDuration = 0;
                 __isScriptRunning = true;
+                __isAutoModeActive = true;
+                __autoModeDurationMinutes = duration_minutes;
                 log_t("Auto-mode script started for %d minutes.", duration_minutes);
             } else {
+                // For debug mode, ensure auto mode is not active
+                __isAutoModeActive = false;
                 log_t("Auto-mode debug script generated for %d minutes. Not executing.", duration_minutes);
             }
         } else if (cmd == "hold") {
             if (__isScriptRunning) {
                 __scriptHoldDuration = val;
             }
+        } else if (cmd == "log_phase") {
+            std::string phaseName = value.substr(colon_pos + 1);
+            log_t("\n-------------- BEGIN: %s ----------------", phaseName.c_str());
         } else if (cmd == "led_blink") {
             // led_blink:HHH,BB,XXXX,YYYY,C
             std::string params = value.substr(colon_pos + 1);
@@ -653,7 +667,7 @@ void processCommand(std::string value) {
         __cometTailLength = 10;
         __cometCount = 3;
         __isManualLedInterval = false;
-        __currentRampDuration = __DEFAULT_RAMP_DURATION_MS;
+        __currentRampDuration = DEFAULT_RAMP_DURATION_MS;
         FastLED.setBrightness(__masterBrightness);
         triggerSetSpeed(__speedSetting);
         processCommand("led_rainbow"); // Add led_rainbow after system reset
@@ -794,6 +808,7 @@ void loop() {
         // Only allow system_reset to interrupt a script
         if (cmd == "system_reset" || cmd == "system_off") {
             __isScriptRunning = false;
+            __isAutoModeActive = false; // Stop auto-mode looping as well
             processCommand(cmd);
         } else if (!__isScriptRunning) {
             processCommand(cmd);
@@ -806,12 +821,31 @@ void loop() {
     // Only advance if motor is idle AND any finite blink sequence has finished
     if (__isScriptRunning && __motorState == __MOTOR_IDLE && (__blinkTargetCount == 0 || !__isBlinkActive)) {
         if (millis() - __scriptLastCommandTime >= __scriptHoldDuration) {
+            if (__scriptCommandIndex >= __activeScriptCommands.size()) {
+                // End of script reached
+                if (__isAutoModeActive) {
+                    log_t("Auto-mode script finished. Generating and starting next script...");
+                    __activeScriptCommands = AutoGenerator::generateScript(__autoModeDurationMinutes);
+                    if (!__activeScriptCommands.empty()) {
+                        __scriptCommandIndex = 0;
+                        // Continue to execute the first command of the new script in this same pass
+                    } else {
+                        // Something went wrong with generation, stop everything.
+                        __isAutoModeActive = false;
+                        __isScriptRunning = false;
+                        return; // exit script engine for this loop iteration
+                    }
+                } else {
+                    // For non-auto-mode scripts (like 'funky'), loop them
+                    __scriptCommandIndex = 0;
+                }
+            }
             std::string cmd = __activeScriptCommands[__scriptCommandIndex];
             __scriptLastCommandTime = millis();
             __scriptHoldDuration = 0; // Reset hold for the next command
             log_t("Script Executing: %s", cmd.c_str());
             processCommand(cmd);
-            __scriptCommandIndex = (__scriptCommandIndex + 1) % __activeScriptCommands.size();
+            __scriptCommandIndex++;
         }
     }
 
