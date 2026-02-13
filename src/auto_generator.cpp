@@ -112,6 +112,21 @@ std::vector<std::string> generateScript(int duration_minutes) {
     randomSeed(millis());
 
     long total_duration_ms = duration_minutes * 60L * 1000L;
+
+    // --- Musical Structure Durations ---
+    long intro_duration_ms = 30 * 1000L;
+    // The main body (Vibe/Tension/Climax) will fill the time between intro and outro.
+    long cool_down_duration_ms = 60 * 1000L;
+    long min_full_show_ms = intro_duration_ms + 120 * 1000L + cool_down_duration_ms; // Approx 3.5 mins for one cycle
+
+    // If requested duration is shorter than a full show, scale down phase times.
+    if (total_duration_ms < min_full_show_ms) {
+        float scale_factor = (float)total_duration_ms / (float)min_full_show_ms;
+        if (scale_factor < 0.5) scale_factor = 0.5; // Don't make them too short
+        intro_duration_ms *= scale_factor;
+        cool_down_duration_ms *= scale_factor;
+    }
+
     long accumulated_duration_ms = 0;
 
     // --- Dynamic Command Limit based on Available Memory ---
@@ -135,9 +150,29 @@ std::vector<std::string> generateScript(int duration_minutes) {
     script.push_back("hold:1000");
     accumulated_duration_ms += 1000;
 
+    // --- 1. INTRODUCTION ---
+    if (intro_duration_ms > 1000) {
+        AUTO_LOG("Generating Phase: INTRODUCTION");
+        long intro_remaining_ms = intro_duration_ms;
+        script.push_back("motor_speed:0");
+        script.push_back("led_reset");
+        script.push_back("hold:2000"); intro_remaining_ms -= 2000;
+        script.push_back(format_command("led_background", (int)random(256), 5));
+        long hold1 = min(5000L, intro_remaining_ms / 3L);
+        if (hold1 > 0) { script.push_back(format_command("hold", hold1)); intro_remaining_ms -= hold1; }
+        script.push_back(format_command("led_tails", (int)random(256), 10, 1));
+        long hold2 = min(5000L, intro_remaining_ms / 2L);
+        if (hold2 > 0) { script.push_back(format_command("hold", hold2)); intro_remaining_ms -= hold2; }
+        script.push_back("motor_speed:500");
+        script.push_back(format_command("led_background", (int)random(256), 15));
+        if (intro_remaining_ms > 1000) script.push_back(format_command("hold", intro_remaining_ms));
+        accumulated_duration_ms += intro_duration_ms;
+    }
+
+    // --- 2. MAIN BODY (VIBE -> TENSION -> CLIMAX loop) ---
     MusicalPhase currentPhase = VIBE;
 
-    while (accumulated_duration_ms < total_duration_ms && script.size() < max_commands - 6) { // Leave room for finale
+    while (accumulated_duration_ms < (total_duration_ms - cool_down_duration_ms) && script.size() < max_commands - 10) { // Leave room for cooldown and finale
         long scene_duration_ms = 0;
         uint8_t base_hue = random(256);
         uint8_t tail_hue;
@@ -147,7 +182,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
         switch (currentPhase) {
             case VIBE: {
                 AUTO_LOG("Generating Phase: VIBE");
-                scene_duration_ms = random(20000, 30001);
+                scene_duration_ms = random(25000, 45001); // Longer, more stable scenes
 
                 // Colors: Harmonious (Analogous/Monochromatic)
                 if (random(100) < 70) { // 70% Analogous
@@ -160,7 +195,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
 
                 script.push_back(format_command("motor_speed", (long)random(500, 701)));
                 script.push_back(format_command("led_background", (int)bg_hue, (int)random(15, 31)));
-                script.push_back(format_command("led_tails", (int)tail_hue, (int)random(10, 25), (int)random(2, 5)));
+                script.push_back(format_command("led_tails", (int)tail_hue, (int)random(10, 25), (int)random(1, 3))); // Favor 1 or 2 tails
 
                 if (random(100) < 50) { // Gentle sine hue effect
                     uint8_t hue_low = (tail_hue - 20 + 256) % 256;
@@ -173,7 +208,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
 
             case TENSION: {
                 AUTO_LOG("Generating Phase: TENSION");
-                scene_duration_ms = random(10000, 20001);
+                scene_duration_ms = random(15000, 25001); // Medium length, building scenes
 
                 // Colors: High-contrast (Complementary)
                 bg_hue = base_hue;
@@ -181,7 +216,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
 
                 script.push_back(format_command("motor_speed", (long)random(750, 951))); // Ramp up speed
                 script.push_back(format_command("led_background", (int)bg_hue, (int)random(25, 41)));
-                script.push_back(format_command("led_tails", (int)tail_hue, (int)random(5, 15), (int)random(4, 7)));
+                script.push_back(format_command("led_tails", (int)tail_hue, (int)random(5, 15), (int)random(3, 6)));
 
                 if (random(100) < 60) { // Pulsing brightness effect
                     script.push_back(format_command("led_sine_pulse", (int)random(20, 51), (int)random(80, 101)));
@@ -193,7 +228,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
 
             case CLIMAX: {
                 AUTO_LOG("Generating Phase: CLIMAX");
-                scene_duration_ms = random(7000, 12001);
+                scene_duration_ms = random(10000, 20001); // Shorter, punchier scenes
                 script.push_back(format_command("motor_speed", (long)random(900, 1001))); // Max speed
                 
                 int climax_effect = random(100);
@@ -222,8 +257,19 @@ std::vector<std::string> generateScript(int duration_minutes) {
         accumulated_duration_ms += scene_duration_ms;
     }
 
-    script.push_back("motor_speed:500");
-    script.push_back("hold:5000");
+    // --- 3. COOL DOWN ---
+    if (cool_down_duration_ms > 1000) {
+        AUTO_LOG("Generating Phase: COOL_DOWN");
+        script.push_back("led_reset");
+        script.push_back(format_command("motor_speed", (long)random(400, 501)));
+        script.push_back(format_command("led_background", (int)random(256), (int)random(5, 15))); // Dim background
+        script.push_back(format_command("led_tails", (int)random(256), (int)random(20, 30), 1)); // One long tail
+        script.push_back(format_command("hold", (long)cool_down_duration_ms / 2));
+        script.push_back(format_command("motor_speed", (long)random(200, 301)));
+        script.push_back(format_command("hold", (long)cool_down_duration_ms / 2));
+    }
+
+    // --- 4. FINALE ---
     script.push_back("system_off");
 
     AUTO_LOG("Generated %d script commands for a total duration of ~%ld ms.", script.size(), accumulated_duration_ms);
