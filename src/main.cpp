@@ -633,6 +633,7 @@ void processCommand(std::string value) {
         __currentRampDuration = __DEFAULT_RAMP_DURATION_MS;
         FastLED.setBrightness(__masterBrightness);
         triggerSetSpeed(__speedSetting);
+        processCommand("led_rainbow"); // Add led_rainbow after system reset
         log_t("System reset to defaults and started.");
     } else if (value == "motor_reverse") {
         triggerReverse();
