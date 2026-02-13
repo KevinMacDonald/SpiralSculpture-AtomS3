@@ -158,6 +158,7 @@ static std::vector<std::string> __activeScriptCommands;
 static const std::vector<std::string> __script_funky = {
     "led_reset",
     "hold:10000",
+    "led_brightness:75",
     "led_background:0,20",
     "led_rainbow",
     "hold:20001",
@@ -766,7 +767,7 @@ void loop() {
         __bleCommandAvailable = false;
 
         // Only allow system_reset to interrupt a script
-        if (cmd == "system_reset" || cmd == "led_reset") {
+        if (cmd == "system_reset" || cmd == "system_off") {
             __isScriptRunning = false;
             processCommand(cmd);
         } else if (!__isScriptRunning) {
