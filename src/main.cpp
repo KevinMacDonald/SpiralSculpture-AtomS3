@@ -692,6 +692,7 @@ class CommandCallback : public BLECharacteristicCallbacks {
 void setup() {
     auto cfg = M5.config();
     cfg.serial_baudrate = 115200;
+    cfg.internal_imu = false; // Disable IMU to prevent "not found" logging on Lite devices
     M5.begin(cfg);
 
     // Force LED pin LOW immediately to prevent floating-point startup flickers
