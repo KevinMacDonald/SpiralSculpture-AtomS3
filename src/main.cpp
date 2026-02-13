@@ -9,6 +9,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <stdarg.h>
+#include "auto_generator.h"
 #include <vector>
 #include <string>
 
@@ -34,6 +35,8 @@
  * led_cycle_down     - Decrease LED cycle speed by 8% (Enables Manual Sync).
  * led_reverse        - Toggle the direction of LED animation cycling.
  * run_script:NAME    - Start a named script (e.g., "run_script:funky").
+ * auto_mode:MMM      - Generate and run a script for MMM minutes.
+ * auto_mode_debug:MMM - Generate and print a script for MMM minutes without running.
  * hold:XXXX          - (Script only) Wait XXXX ms before next command.
  * led_blink:H,B,U,D,C - Pulse Hue (0-255), Brightness % (0-100), Ramp Up (ms), Ramp Down (ms), Count (0=loop).
  * led_sine_hue:L,H   - Oscillate Comet Hue between L and H (0-255) synced to motor speed.
@@ -523,6 +526,23 @@ void processCommand(std::string value) {
                 __isScriptRunning = true;
                 log_t("Script started: funky");
             }
+        } else if (cmd == "auto_mode" || cmd == "auto_mode_debug") {
+            int duration_minutes = constrain(val, 1, 240); // Constrain to 1min - 4hours
+
+            // Stop any currently running script
+            __isScriptRunning = false;
+
+            __activeScriptCommands = AutoGenerator::generateScript(duration_minutes);
+
+            if (cmd == "auto_mode" && !__activeScriptCommands.empty()) {
+                __scriptCommandIndex = 0;
+                __scriptLastCommandTime = millis();
+                __scriptHoldDuration = 0;
+                __isScriptRunning = true;
+                log_t("Auto-mode script started for %d minutes.", duration_minutes);
+            } else {
+                log_t("Auto-mode debug script generated for %d minutes. Not executing.", duration_minutes);
+            }
         } else if (cmd == "hold") {
             if (__isScriptRunning) {
                 __scriptHoldDuration = val;
@@ -620,7 +640,6 @@ void processCommand(std::string value) {
     } else if (value == "motor_stop") {
         triggerStop();
     } else if (value == "system_reset") {
-        __isScriptRunning = false;
         __isBlinkActive = false;
         __isHueSineActive = false;
         __isRainbowActive = false;
