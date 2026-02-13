@@ -39,11 +39,12 @@
  * auto_mode:MMM      - Generate and run a script for MMM minutes.
  * auto_mode_debug:MMM - Generate and print a script for MMM minutes without running.
  * hold:XXXX          - (Script only) Wait XXXX ms before next command.
- * log_phase:NAME     - (Script only, internal) Log a musical phase marker to the terminal.
+ * [comment]          - (Script only, internal) A comment line, logged to terminal and ignored.
  * led_blink:H,B,U,D,C - Pulse Hue (0-255), Brightness % (0-100), Ramp Up (ms), Ramp Down (ms), Count (0=loop).
  * led_sine_hue:L,H   - Oscillate Comet Hue between L and H (0-255) synced to motor speed.
  * led_rainbow        - Cycle Comet Hue through full rainbow synced to motor speed.
  * led_sine_pulse:L,H - Oscillate Master Brightness between L and H % (0-100) synced to motor speed.
+ * led_effect:NAME,P1.. - Activate a full-strip effect (e.g., 'fire', 'noise', 'twinkle'). Replaces comet tails.
  * led_reset          - Clear all dynamic effects, background, and comets to black.
  */
 
@@ -132,14 +133,31 @@ static bool __isManualLedInterval = false;    // Flag to override the sync table
 static float __manualLedIntervalMs = 0;       // The base interval set by the user
 static int __manualSpeedReference = 0;        // The logical speed at which the manual interval was set
 
-// --- LED Blink State ---
-static bool __isBlinkActive = false;
+// --- LED Effect State Machine ---
+enum LedEffect {
+    EFFECT_COMET,
+    EFFECT_BLINK,
+    EFFECT_NOISE,
+    EFFECT_FIRE,
+    EFFECT_TWINKLE
+};
+static LedEffect __activeLedEffect = EFFECT_COMET;
+
+// Blink State
 static uint8_t __blinkHue = 0;
 static uint8_t __blinkMaxBri = 255;
 static unsigned long __blinkUpDuration = 1000;
 static unsigned long __blinkDownDuration = 1000;
 static unsigned long __blinkStartTime = 0;
 static int __blinkTargetCount = 0; // 0 means loop indefinitely
+
+// Noise State
+static CRGBPalette16 __noise_palette;
+static uint8_t __noise_scale = 30;
+static uint16_t __noise_x, __noise_y, __noise_z;
+
+// Fire State
+static byte __heat[__NUM_LEDS];
 
 // --- Dynamic LED State (Synced to Motor RPM) ---
 static bool __isHueSineActive = false;
@@ -461,6 +479,12 @@ static volatile bool __bleCommandAvailable = false;
 void processCommand(std::string value) {
     if (value.length() == 0) return;
 
+    // Per user request, lines starting with '[' are comments.
+    // They are logged by the script engine but otherwise ignored here.
+    if (value[0] == '[') {
+        return;
+    }
+
     size_t colon_pos = value.find(':');
 
     if (colon_pos != std::string::npos) {
@@ -474,14 +498,13 @@ void processCommand(std::string value) {
             val = constrain(val, 0, 10000);
             __currentRampDuration = val;
             log_t("Set Motor Ramp Duration: %d", __currentRampDuration);
-        } else if (cmd == "led_brightness") {
+        } else if (cmd == "led_brightness") { // This command now also deactivates pulse sine
             __isPulseSineActive = false;
             int brightness_pct = constrain(val, 0, 100);
             __masterBrightness = (uint8_t)((brightness_pct * 255) / 100);
             FastLED.setBrightness(__masterBrightness);
             log_t("LED Master Brightness set to: %d%% (%d/255)", brightness_pct, __masterBrightness);
         } else if (cmd == "led_background") {
-            __isBlinkActive = false;
             std::string params = value.substr(colon_pos + 1);
             size_t comma_pos = params.find(',');
             if (comma_pos != std::string::npos) {
@@ -492,7 +515,7 @@ void processCommand(std::string value) {
                 log_t("LED Background set to Hue: %d, Brightness: %d%% (%d)", __bgHue, b_pct, __bgBrightness);
             }
         } else if (cmd == "led_tails") {
-            __isBlinkActive = false;
+            __activeLedEffect = EFFECT_COMET;
             std::string params = value.substr(colon_pos + 1);
             size_t comma1 = params.find(',');
             size_t comma2 = params.find(',', comma1 + 1);
@@ -510,7 +533,6 @@ void processCommand(std::string value) {
                 }
             }
         } else if (cmd == "led_cycle_time") {
-            __isBlinkActive = false;
             if (val > 0) {
                 __isManualLedInterval = true;
                 __manualLedIntervalMs = (float)val / (float)__LOGICAL_NUM_LEDS;
@@ -519,7 +541,6 @@ void processCommand(std::string value) {
                 log_t("LED Manual Sync set at speed %d. Step interval: %.2f ms", __manualSpeedReference, __ledIntervalMs);
             }
         } else if (cmd == "system_off") {
-            __isBlinkActive = false;
             __pendingOff = true;
         } else if (cmd == "run_script") {
             std::string scriptName = value.substr(colon_pos + 1);
@@ -558,9 +579,6 @@ void processCommand(std::string value) {
             if (__isScriptRunning) {
                 __scriptHoldDuration = val;
             }
-        } else if (cmd == "log_phase") {
-            std::string phaseName = value.substr(colon_pos + 1);
-            log_t("\n-------------- BEGIN: %s ----------------", phaseName.c_str());
         } else if (cmd == "led_blink") {
             // led_blink:HHH,BB,XXXX,YYYY,C
             std::string params = value.substr(colon_pos + 1);
@@ -590,8 +608,8 @@ void processCommand(std::string value) {
                 __blinkTargetCount = count;
                 
                 FastLED.clear(true);
-                __isBlinkActive = true;
                 __blinkStartTime = millis();
+                __activeLedEffect = EFFECT_BLINK;
                 log_t("LED Blink set: Hue %d, MaxBri %d, Up %lu, Down %lu, Count %d", __blinkHue, b, __blinkUpDuration, __blinkDownDuration, __blinkTargetCount);
             }
         } else if (cmd == "led_sine_hue") {
@@ -618,19 +636,59 @@ void processCommand(std::string value) {
                 __pulseSineHigh = (uint8_t)((constrain(high_pct, 0, 100) * 255) / 100);
                 
                 __isPulseSineActive = true;
-                __isBlinkActive = false;
                 // If everything is dark, enable background so the pulse is visible
                 if (__bgBrightness == 0 && __cometCount == 0) {
                     __bgBrightness = 76; // Default to 30% floor
                 }
                 log_t("LED Sine Pulse: Range %d%%-%d%% (Sync BPM)", low_pct, high_pct);
             }
+        } else if (cmd == "led_effect") {
+            std::string params = value.substr(colon_pos + 1);
+            size_t c1 = params.find(',');
+            std::string effectName = (c1 != std::string::npos) ? params.substr(0, c1) : params;
+
+            if (effectName == "fire") {
+                __activeLedEffect = EFFECT_FIRE;
+                log_t("LED Effect: Fire");
+            } else if (effectName == "twinkle") {
+                __activeLedEffect = EFFECT_TWINKLE;
+                log_t("LED Effect: Twinkle");
+            } else if (effectName == "noise") {
+                size_t c2 = params.find(',', c1 + 1);
+                size_t c3 = params.find(',', c2 + 1);
+                if (c1 != std::string::npos && c2 != std::string::npos && c3 != std::string::npos) {
+                    std::string paletteName = params.substr(c1 + 1, c2 - (c1 + 1));
+                    int speed = atoi(params.substr(c2 + 1, c3 - (c2 + 1)).c_str());
+                    int scale = atoi(params.substr(c3 + 1).c_str());
+
+                    if (paletteName == "lava") __noise_palette = LavaColors_p;
+                    else if (paletteName == "cloud") __noise_palette = CloudColors_p;
+                    else if (paletteName == "ocean") __noise_palette = OceanColors_p;
+                    else if (paletteName == "forest") __noise_palette = ForestColors_p;
+                    else if (paletteName == "party") __noise_palette = PartyColors_p;
+                    else __noise_palette = RainbowColors_p;
+
+                    __noise_x = random16();
+                    __noise_y = random16();
+                    __noise_z = random16();
+                    __noise_scale = (uint8_t)constrain(scale, 1, 150);
+                    __activeLedEffect = EFFECT_NOISE;
+                    log_t("LED Effect: Noise (Palette: %s, Speed: %d, Scale: %d)", paletteName.c_str(), speed, scale);
+                }
+            } else if (effectName == "none") {
+                __activeLedEffect = EFFECT_COMET;
+                if (__cometCount == 0) __cometCount = 1;
+                log_t("LED Effect: None (reverted to Comet)");
+            } else {
+                log_t("Unknown effect name: %s", effectName.c_str());
+            }
+
+
         } else {
             log_t("Unknown command prefix: %s", cmd.c_str());
         }
 
     } else if (value == "system_off") {
-        __isBlinkActive = false;
         __pendingOff = true;
     } else if (value == "led_rainbow") {
         __isRainbowActive = true;
@@ -638,11 +696,10 @@ void processCommand(std::string value) {
         if (__cometCount == 0) __cometCount = 1; // Ensure visibility
         log_t("LED Rainbow Mode: Sync BPM");
     } else if (value == "led_reset") {
-        __isBlinkActive = false;
         __isHueSineActive = false;
         __isRainbowActive = false;
         __isPulseSineActive = false;
-        __bgBrightness = 0;
+        __activeLedEffect = EFFECT_COMET;
         __cometCount = 0;
         __isManualLedInterval = false;
         __masterBrightness = 255;
@@ -654,7 +711,6 @@ void processCommand(std::string value) {
     } else if (value == "motor_stop") {
         triggerStop();
     } else if (value == "system_reset") {
-        __isBlinkActive = false;
         __isHueSineActive = false;
         __isRainbowActive = false;
         __isPulseSineActive = false;
@@ -667,6 +723,7 @@ void processCommand(std::string value) {
         __cometTailLength = 10;
         __cometCount = 3;
         __isManualLedInterval = false;
+        __activeLedEffect = EFFECT_COMET;
         __currentRampDuration = DEFAULT_RAMP_DURATION_MS;
         FastLED.setBrightness(__masterBrightness);
         triggerSetSpeed(__speedSetting);
@@ -679,14 +736,12 @@ void processCommand(std::string value) {
     } else if (value == "motor_speed_down") {
         triggerSpeedDown();
     } else if (value == "led_cycle_up") {
-        __isBlinkActive = false;
         __isManualLedInterval = true;
         __ledIntervalMs *= 0.92f;
         __manualLedIntervalMs = __ledIntervalMs;
         __manualSpeedReference = (__currentLogicalSpeed > 0) ? __currentLogicalSpeed : __speedSetting;
         log_t("LED Cycle speed UP 8%% (Manual). Interval: %.2f ms", __ledIntervalMs);
     } else if (value == "led_cycle_down") {
-        __isBlinkActive = false;
         __isManualLedInterval = true;
         __ledIntervalMs *= 1.08f;
         __manualLedIntervalMs = __ledIntervalMs;
@@ -698,6 +753,49 @@ void processCommand(std::string value) {
     } else {
         log_t("Invalid command format: %s", value.c_str());
     }
+}
+
+// --- Full Strip Effect Implementations ---
+
+void runFireEffect() {
+    // Fire2012 by Mark Kriegsman, described here: http://www.incinquecento.com/project/core-heating-and-cooling-for-a-1d-fire-effect/
+    const int COOLING = 55;
+    const int SPARKING = 120;
+
+    // Step 1.  Cool down every cell a little
+    for (int i = 0; i < __NUM_LEDS; i++) {
+        __heat[i] = qsub8(__heat[i], random8(0, ((COOLING * 10) / __NUM_LEDS) + 2));
+    }
+
+    // Step 2.  Heat from each cell drifts 'up' and diffuses a little
+    for (int k = __NUM_LEDS - 1; k >= 2; k--) {
+        __heat[k] = (__heat[k - 1] + __heat[k - 2] + __heat[k - 2]) / 3;
+    }
+
+    // Step 3.  Randomly ignite new 'sparks' of heat near the bottom
+    if (random8() < SPARKING) {
+        int y = random8(7);
+        __heat[y] = qadd8(__heat[y], random8(160, 255));
+    }
+
+    // Step 4.  Map from heat cells to LED colors
+    for (int j = 0; j < __NUM_LEDS; j++) {
+        CRGB color = HeatColor(__heat[j]);
+        __leds[j] = color;
+    }
+    FastLED.show();
+}
+
+void runNoiseEffect() {
+    // Fill the strip with 1D noise from a palette
+    uint8_t speed = 10; // This could be a parameter
+    __noise_z += speed;
+
+    for (int i = 0; i < __NUM_LEDS; i++) {
+        uint8_t noise = inoise8(__noise_x + i * __noise_scale, __noise_y, __noise_z);
+        __leds[i] = ColorFromPalette(__noise_palette, noise, 255, LINEARBLEND);
+    }
+    FastLED.show();
 }
 
 // --- BLE Callbacks ---
@@ -819,7 +917,7 @@ void loop() {
 
     // --- Script Engine ---
     // Only advance if motor is idle AND any finite blink sequence has finished
-    if (__isScriptRunning && __motorState == __MOTOR_IDLE && (__blinkTargetCount == 0 || !__isBlinkActive)) {
+    if (__isScriptRunning && __motorState == __MOTOR_IDLE && (__activeLedEffect != EFFECT_BLINK || __blinkTargetCount == 0)) {
         if (millis() - __scriptLastCommandTime >= __scriptHoldDuration) {
             if (__scriptCommandIndex >= __activeScriptCommands.size()) {
                 // End of script reached
@@ -877,75 +975,82 @@ void loop() {
         }
     }
 
-    if (__isBlinkActive) {
-        unsigned long elapsed = millis() - __blinkStartTime;
-        unsigned long totalCycle = __blinkUpDuration + __blinkDownDuration;
-        if (totalCycle > 0) {
-            // Check if we have reached the target count for finite blinks
-            if (__blinkTargetCount > 0 && (elapsed / totalCycle) >= (unsigned long)__blinkTargetCount) {
-                __isBlinkActive = false;
-                __blinkTargetCount = 0;
-                FastLED.clear(true);
-            } else {
-                unsigned long cyclePos = elapsed % totalCycle;
-                uint8_t bri = 0;
-                if (cyclePos < __blinkUpDuration) {
-                    bri = map(cyclePos, 0, __blinkUpDuration, 0, __blinkMaxBri);
+    // --- LED Strip Animation ---
+    switch (__activeLedEffect) {
+        case EFFECT_BLINK: {
+            unsigned long elapsed = millis() - __blinkStartTime;
+            unsigned long totalCycle = __blinkUpDuration + __blinkDownDuration;
+            if (totalCycle > 0) {
+                // Check if we have reached the target count for finite blinks
+                if (__blinkTargetCount > 0 && (elapsed / totalCycle) >= (unsigned long)__blinkTargetCount) {
+                    __activeLedEffect = EFFECT_COMET; // Revert to default effect
+                    __blinkTargetCount = 0;
+                    FastLED.clear(true);
                 } else {
-                    unsigned long downElapsed = cyclePos - __blinkUpDuration;
-                    bri = map(downElapsed, 0, __blinkDownDuration, __blinkMaxBri, 0);
-                }
-                fill_solid(__leds, __NUM_LEDS, CHSV(__blinkHue, 255, bri));
-                FastLED.show();
-            }
-        }
-    } 
-    // Standard comet animation runs if blink is inactive and motor is running
-    else if (__isMotorRunning && __currentLogicalSpeed > 0) {
-        // Use the absolute interval set by the user.
-        unsigned long dynamicInterval = (unsigned long)max(1.0f, __ledIntervalMs);
-
-        if (millis() - __last_led_strip_update > dynamicInterval) {
-            __last_led_strip_update = millis();
-            
-            // 1. Fade existing LEDs for the comet tail based on requested length
-            uint8_t fadeAmount = 255 / __cometTailLength;
-            fadeToBlackBy(__leds, __NUM_LEDS, fadeAmount);
-            
-            // 2. Apply dynamic background floor
-            CRGB bgColor = CHSV(__bgHue, 255, __bgBrightness);
-            
-            // Update onboard LED to show direction: Green for CW, Blue for CCW
-            __onboard_led[0] = __isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
-
-            // Apply background using a "Lighten" blend.
-            // This preserves the tail's color by taking the maximum of each channel.
-            for (int i = 0; i < __NUM_LEDS; i++) {
-                __leds[i].r = max(__leds[i].r, bgColor.r);
-                __leds[i].g = max(__leds[i].g, bgColor.g);
-                __leds[i].b = max(__leds[i].b, bgColor.b);
-            }
-
-            // Determine LED cycling direction. Default is forward (incrementing) when motor is CCW.
-            // __isLedReversed toggles this behavior.
-            bool led_direction_is_forward = !__isDirectionClockwise ^ __isLedReversed;
-
-            if (led_direction_is_forward) {
-                __led_position = (__led_position + 1) % __LOGICAL_NUM_LEDS;
-            } else {
-                __led_position = (__led_position - 1 + __LOGICAL_NUM_LEDS) % __LOGICAL_NUM_LEDS;
-            }
-
-            // 3. Draw the heads (spaced evenly)
-            for (int j = 0; j < __cometCount; j++) {
-                int pos = (__led_position + j * (__LOGICAL_NUM_LEDS / __cometCount)) % __LOGICAL_NUM_LEDS;
-                // Only draw if the logical position exists on the physical strip
-                if (pos < __NUM_LEDS) {
-                    __leds[pos] = CHSV(__cometHue, 255, 255);
+                    unsigned long cyclePos = elapsed % totalCycle;
+                    uint8_t bri = 0;
+                    if (cyclePos < __blinkUpDuration) {
+                        bri = map(cyclePos, 0, __blinkUpDuration, 0, __blinkMaxBri);
+                    } else {
+                        unsigned long downElapsed = cyclePos - __blinkUpDuration;
+                        bri = map(downElapsed, 0, __blinkDownDuration, __blinkMaxBri, 0);
+                    }
+                    fill_solid(__leds, __NUM_LEDS, CHSV(__blinkHue, 255, bri));
+                    FastLED.show();
                 }
             }
-            FastLED.show();
+            break;
         }
+        case EFFECT_COMET: {
+            if (__isMotorRunning && __currentLogicalSpeed > 0) {
+                // 1. Update dynamic parameters (Sine/Rainbow) for the comet
+                if (__isRainbowActive || __isHueSineActive || __isPulseSineActive) {
+                    float revTime = __ledIntervalMs * (float)__LOGICAL_NUM_LEDS;
+                    uint16_t bpm88 = (revTime > 0) ? (uint16_t)(15360000.0f / revTime) : 0;
+
+                    if (__isRainbowActive) __cometHue = beat88(bpm88) >> 8;
+                    else if (__isHueSineActive) __cometHue = (uint8_t)beatsin88(bpm88, __hueSineLow, __hueSineHigh);
+                    if (__isPulseSineActive) FastLED.setBrightness((uint8_t)beatsin88(bpm88, __pulseSineLow, __pulseSineHigh));
+                }
+
+                unsigned long dynamicInterval = (unsigned long)max(1.0f, __ledIntervalMs);
+                if (millis() - __last_led_strip_update > dynamicInterval) {
+                    __last_led_strip_update = millis();
+                    
+                    uint8_t fadeAmount = 255 / __cometTailLength;
+                    fadeToBlackBy(__leds, __NUM_LEDS, fadeAmount);
+                    
+                    CRGB bgColor = CHSV(__bgHue, 255, __bgBrightness);
+                    __onboard_led[0] = __isDirectionClockwise ? CRGB(0, 50, 0) : CRGB(0, 0, 50);
+
+                    for (int i = 0; i < __NUM_LEDS; i++) {
+                        __leds[i].r = max(__leds[i].r, bgColor.r);
+                        __leds[i].g = max(__leds[i].g, bgColor.g);
+                        __leds[i].b = max(__leds[i].b, bgColor.b);
+                    }
+
+                    bool led_direction_is_forward = !__isDirectionClockwise ^ __isLedReversed;
+                    if (led_direction_is_forward) __led_position = (__led_position + 1) % __LOGICAL_NUM_LEDS;
+                    else __led_position = (__led_position - 1 + __LOGICAL_NUM_LEDS) % __LOGICAL_NUM_LEDS;
+
+                    for (int j = 0; j < __cometCount; j++) {
+                        int pos = (__led_position + j * (__LOGICAL_NUM_LEDS / __cometCount)) % __LOGICAL_NUM_LEDS;
+                        if (pos < __NUM_LEDS) __leds[pos] = CHSV(__cometHue, 255, 255);
+                    }
+                    FastLED.show();
+                }
+            }
+            break;
+        }
+        case EFFECT_FIRE:
+            runFireEffect();
+            break;
+        case EFFECT_NOISE:
+            runNoiseEffect();
+            break;
+        case EFFECT_TWINKLE:
+            //runTwinkleEffect(); // To be implemented
+            break;
     }
 
 
