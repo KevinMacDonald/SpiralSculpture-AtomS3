@@ -27,8 +27,34 @@
   proceed into the auto-generated script. Use a random seed based on current time that the auto_mode command is run. Cap the number of generated
   commands to 100. Place all the code for this in this new file, and create functions that main.cpp can call.   
 
-  
+  Some general guidance on command generation:
+  - Keep the motor speed at 500 at the minimum, because below that the motor might stall and not rotate.
+  - Limit the holds on a particular command to about 15 seconds before moving on. 
+  - It is more dramatic when motor speed changes more often across the full range. Place a bias on changing motor speed more aggressively.
+  - Place a bias (not a strict one) towards matching led cycling more closely to motor speed, so that when the motor is turning faster 
+  - animation speeds up, and vice versa. But you can depart from this. What auto mode should attempt to do is establish a rythm, but then
+  - break from the rythm over time to create interest. 
+  - Overall, we want to establish a vibe, build some tension, do something flashy, and then re-establish a vibe. Repeated tension, resolution.
+    Like a musical piece. 
+  - Some ideas for the different phases:
+    INTRODUCTION: You could start with motor off, and gradually ramp up lighting activity, leading into the VIBE.
+    VIBE: Hang onto the vibe for a minute or so. Some variation to spark interest. Favor 1 or 2 led cycles more often.
+    TENSION: Really start to ramp things up. led cycles can step up towards 3 to 5. 
+    CLIMAX: Go crazy! More led cycles. Rapid led cycle direction changes. Rapid color changes. Hang onto higher motor speeds. 
+    COOL_DOWN: Taper off activity. Bring the audience down gently. 
 
+  - Some suggestions for phase durations:
+    INTRODUCTION: About 30 seconds.
+    VIBE: About 2 minutes.  
+    TENSION: About 1 minutes.
+    CLIMAX: 30 seconds.
+    COOL_DOWN: About 1 minute.
+
+  - Overall structure of the musical piece:
+    - INTRODUCTION and COOL_DOWN only happen at beginning and end. 
+    - VIBE, TENSION, and CLIMAX can cycle through to fill in the duration. 
+    - Any composition should at least have one pass through everything, which implies a min duration of 5 minutes for auto. That's 
+      about the length of modern pop song. 
 
 */
 #include "auto_generator.h"
@@ -64,6 +90,21 @@ std::string format_command(const char* cmd, int val1, int val2, int val3) {
     return std::string(buffer);
 }
 
+std::string format_command(const char* cmd, int val1, int val2, int val3, int val4, int val5) {
+    char buffer[64];
+    sprintf(buffer, "%s:%d,%d,%d,%d,%d", cmd, val1, val2, val3, val4, val5);
+    return std::string(buffer);
+}
+
+// Per guidance, the generator now follows a musical structure.
+enum MusicalPhase {
+    INTRODUCTION,
+    VIBE,
+    TENSION,
+    CLIMAX,
+    COOL_DOWN
+};
+
 std::vector<std::string> generateScript(int duration_minutes) {
     std::vector<std::string> script;
     if (duration_minutes <= 0) return script;
@@ -94,57 +135,86 @@ std::vector<std::string> generateScript(int duration_minutes) {
     script.push_back("hold:1000");
     accumulated_duration_ms += 1000;
 
-    while (accumulated_duration_ms < total_duration_ms && script.size() < max_commands - 4) {
-        long scene_duration_ms = random(15000, 45001); // 15 to 45 seconds per scene
+    MusicalPhase currentPhase = VIBE;
 
-        // --- Color & Effect Generation with Basic Color Theory ---
-        // Instead of pure random colors, we'll pick a relationship (e.g., complementary)
-        // to create more visually pleasing and intentional scenes.
-
+    while (accumulated_duration_ms < total_duration_ms && script.size() < max_commands - 6) { // Leave room for finale
+        long scene_duration_ms = 0;
         uint8_t base_hue = random(256);
         uint8_t tail_hue;
         uint8_t bg_hue;
 
-        int color_strategy = random(100);
-        if (color_strategy < 50) { // 50% Complementary: Opposites on the color wheel.
-            bg_hue = base_hue;
-            tail_hue = (base_hue + 128) % 256;
-        } else if (color_strategy < 80) { // 30% Analogous: Colors that are next to each other.
-            bg_hue = base_hue;
-            tail_hue = (base_hue + random(20, 41)) % 256;
-        } else { // 20% Monochromatic: Variations of a single hue.
-            bg_hue = base_hue;
-            tail_hue = base_hue;
+        // --- Generate a scene based on the current musical phase ---
+        switch (currentPhase) {
+            case VIBE: {
+                AUTO_LOG("Generating Phase: VIBE");
+                scene_duration_ms = random(20000, 30001);
+
+                // Colors: Harmonious (Analogous/Monochromatic)
+                if (random(100) < 70) { // 70% Analogous
+                    bg_hue = base_hue;
+                    tail_hue = (base_hue + random(20, 41)) % 256;
+                } else { // 30% Monochromatic
+                    bg_hue = base_hue;
+                    tail_hue = base_hue;
+                }
+
+                script.push_back(format_command("motor_speed", (long)random(500, 701)));
+                script.push_back(format_command("led_background", (int)bg_hue, (int)random(15, 31)));
+                script.push_back(format_command("led_tails", (int)tail_hue, (int)random(10, 25), (int)random(2, 5)));
+
+                if (random(100) < 50) { // Gentle sine hue effect
+                    uint8_t hue_low = (tail_hue - 20 + 256) % 256;
+                    uint8_t hue_high = (tail_hue + 20) % 256;
+                    script.push_back(format_command("led_sine_hue", (int)hue_low, (int)hue_high));
+                }
+                currentPhase = TENSION; // Transition to next phase
+                break;
+            }
+
+            case TENSION: {
+                AUTO_LOG("Generating Phase: TENSION");
+                scene_duration_ms = random(10000, 20001);
+
+                // Colors: High-contrast (Complementary)
+                bg_hue = base_hue;
+                tail_hue = (base_hue + 128) % 256;
+
+                script.push_back(format_command("motor_speed", (long)random(750, 951))); // Ramp up speed
+                script.push_back(format_command("led_background", (int)bg_hue, (int)random(25, 41)));
+                script.push_back(format_command("led_tails", (int)tail_hue, (int)random(5, 15), (int)random(4, 7)));
+
+                if (random(100) < 60) { // Pulsing brightness effect
+                    script.push_back(format_command("led_sine_pulse", (int)random(20, 51), (int)random(80, 101)));
+                }
+                if (random(100) < 20) script.push_back("led_reverse");
+                currentPhase = CLIMAX; // Transition to next phase
+                break;
+            }
+
+            case CLIMAX: {
+                AUTO_LOG("Generating Phase: CLIMAX");
+                scene_duration_ms = random(7000, 12001);
+                script.push_back(format_command("motor_speed", (long)random(900, 1001))); // Max speed
+                
+                int climax_effect = random(100);
+                if (climax_effect < 50) { // Big rainbow finish
+                    script.push_back("led_rainbow");
+                    script.push_back(format_command("led_tails", 0, (int)random(10, 20), (int)random(3, 6)));
+                } else { // Strobing blink finish
+                    uint8_t blink_hue = random(256);
+                    int blink_count = random(5, 11);
+                    script.push_back(format_command("led_blink", (int)blink_hue, 100, 100, 200, blink_count));
+                    scene_duration_ms = 300 * blink_count + 1000; // Adjust hold for blink duration
+                }
+
+                if (random(100) < 50) {
+                    script.push_back("motor_reverse");
+                    accumulated_duration_ms += APPROX_RAMP_DURATION_MS + 1000;
+                }
+                currentPhase = VIBE; // Transition back to start
+                break;
+            }
         }
-
-        // --- Command Generation ---
-        if (random(100) < 80) script.push_back(format_command("motor_speed", (long)random(400, 1001)));
-        if (random(100) < 25) {
-            script.push_back("motor_reverse");
-            script.push_back(format_command("hold", (long)APPROX_RAMP_DURATION_MS + 1000));
-            accumulated_duration_ms += APPROX_RAMP_DURATION_MS + 1000;
-        }
-
-        if (random(100) < 70) script.push_back(format_command("led_background", (int)bg_hue, (int)random(10, 41)));
-        else script.push_back("led_background:0,0"); // Occasionally have no background
-
-        if (random(100) < 85) script.push_back(format_command("led_tails", (int)tail_hue, (int)random(5, 25), (int)random(1, 6)));
-        else script.push_back("led_tails:0,1,0"); // Occasionally have no tails
-
-        int effect_choice = random(100);
-        if (effect_choice < 20) {
-            script.push_back("led_rainbow"); // Rainbow overrides our careful color choices, which is fine for variety.
-        } else if (effect_choice < 40) {
-            // Sine Hue will oscillate around the chosen tail hue.
-            uint8_t hue_low = (tail_hue - 30 + 256) % 256;
-            uint8_t hue_high = (tail_hue + 30) % 256;
-            script.push_back(format_command("led_sine_hue", (int)hue_low, (int)hue_high));
-        } else if (effect_choice < 60) {
-            script.push_back(format_command("led_sine_pulse", (int)random(10, 41), (int)random(70, 101)));
-        }
-
-        if (random(100) < 15) script.push_back("led_reverse");
-        if (random(100) < 10) script.push_back(format_command("led_brightness", (long)random(50, 101)));
 
         long remaining_time = total_duration_ms - accumulated_duration_ms;
         if (scene_duration_ms > remaining_time && remaining_time > 1000) scene_duration_ms = remaining_time;
