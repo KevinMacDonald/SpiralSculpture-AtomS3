@@ -37,13 +37,15 @@
   - Overall, we want to establish a vibe, build some tension, do something flashy, and then re-establish a vibe. Repeated tension, resolution.
     Like a musical piece. 
   - Some ideas for the different phases:
-    INTRODUCTION: You could start with motor off, and gradually ramp up lighting activity, leading into the VIBE.
+    INTRODUCTION: You could start with motor off, and gradually ramp up lighting activity. Introduce some led effects that benefit from low
+    or zero motor speeds. Ramp up towards the VIBE phase. 
     VIBE: Hang onto the vibe for a minute or so. Some variation to spark interest. Favor 1 or 2 led cycles more often. But also explore
     longer led cycle times such that the cycle time is up to twice as long as estimated motor revolution time. 
     TENSION: Really start to ramp things up. led cycles can step up towards 3 to 5 and should mostly have a cycle time equal to or greater
     than motor revolution time.  
     CLIMAX: Go crazy! More led cycles. Rapid led cycle direction changes. Rapid color changes. Hang onto higher motor speeds. Occasionally
-    introduce much more rapid led cycle direction changes, creating a see-saw effect. 
+    introduce much more rapid led cycle direction changes, creating a see-saw effect. Break up high motor speeds with motor speed zero and 
+    lighting effects like marquee. 
     COOL_DOWN: Taper off activity. Bring the audience down gently. 
     With the introduction of additional commands utilizing more of FastLED's sophisticated patterns I think we could take advantage of those 
     to stop motor rotation fully on occasion in order to showcase them. Perlin noise, fire effects, Twinkle/sparkle might benefit from
@@ -58,7 +60,7 @@
     INTRODUCTION: About 30 seconds.
     VIBE: About 2 minutes.  
     TENSION: About 1 minutes.
-    CLIMAX: 30 seconds.
+    CLIMAX: 90 seconds.
     COOL_DOWN: About 1 minute.
 
   - Overall structure of the musical piece:
@@ -86,6 +88,9 @@
 #define AUTO_LOG(format, ...) Serial.printf("%lu ms: [AutoGenerator] " format "\n", millis(), ##__VA_ARGS__)
 
 namespace AutoGenerator {
+
+const std::vector<const char*> calm_noise_palettes = {"cloud", "ocean", "forest"};
+const std::vector<const char*> energetic_noise_palettes = {"lava", "party", "rainbow"};
 
 // Helper to create a command string from various parameter types
 std::string format_command(const char* cmd, long val) {
@@ -203,7 +208,10 @@ std::vector<std::string> generateScript(int duration_minutes) {
         // Per guidance, showcase a full-strip effect with motor off.
         if (random(100) < 50) { // 50% chance to start with a noise effect
             script.push_back("motor_speed:0");
-            script.push_back("led_effect:noise,cloud,5,30");
+            const char* palette = calm_noise_palettes[random(calm_noise_palettes.size())];
+            char buffer[64];
+            sprintf(buffer, "led_effect:noise,%s,5,30", palette);
+            script.push_back(buffer);
             script.push_back("hold:7000"); intro_remaining_ms -= 7000;
         } else {
             script.push_back("motor_speed:0");
@@ -249,8 +257,11 @@ std::vector<std::string> generateScript(int duration_minutes) {
 
                 // Per guidance, occasionally break up the vibe with a full-strip effect
                 if (random(100) < 15) {
-                    script.push_back("led_effect:noise,ocean,8,40");
                     script.push_back(format_command("motor_speed", (long)random(500, 601)));
+                    const char* palette = calm_noise_palettes[random(calm_noise_palettes.size())];
+                    char buffer[64];
+                    sprintf(buffer, "led_effect:noise,%s,8,40", palette);
+                    script.push_back(buffer);
                 } else {
                     long motor_speed = random(500, 701);
                     script.push_back(format_command("motor_speed", motor_speed));
@@ -281,16 +292,24 @@ std::vector<std::string> generateScript(int duration_minutes) {
                 bg_hue = base_hue;
                 tail_hue = (base_hue + 128) % 256;
 
-                long motor_speed = random(750, 951);
-                script.push_back(format_command("motor_speed", motor_speed)); // Ramp up speed
-                script.push_back(format_command("led_background", (int)bg_hue, (int)random(25, 41)));
-                script.push_back(format_command("led_tails", (int)tail_hue, (int)random(5, 15), (int)random(3, 6)));
+                if (random(100) < 20) { // 20% chance for a marquee effect
+                    script.push_back(format_command("motor_speed", (long)random(600, 801)));
+                    char buffer[64];
+                    // led_effect:marquee,H,LW,DW,S
+                    sprintf(buffer, "led_effect:marquee,%d,%d,%d,%d", tail_hue, (int)random(2,5), (int)random(4,10), (int)random(25, 76));
+                    script.push_back(buffer);
+                } else {
+                    long motor_speed = random(750, 951);
+                    script.push_back(format_command("motor_speed", motor_speed)); // Ramp up speed
+                    script.push_back(format_command("led_background", (int)bg_hue, (int)random(25, 41)));
+                    script.push_back(format_command("led_tails", (int)tail_hue, (int)random(5, 15), (int)random(3, 6)));
 
-                // Per guidance, cycle time >= motor revolution time
-                if (random(100) < 75) { // 75% chance to set a custom cycle time
-                    long est_rev_time = calculate_rev_time_ms(motor_speed);
-                    float multiplier = (float)random(100, 151) / 100.0f; // 1.0x to 1.5x
-                    script.push_back(format_command("led_cycle_time", (long)(est_rev_time * multiplier)));
+                    // Per guidance, cycle time >= motor revolution time
+                    if (random(100) < 75) { // 75% chance to set a custom cycle time
+                        long est_rev_time = calculate_rev_time_ms(motor_speed);
+                        float multiplier = (float)random(100, 151) / 100.0f; // 1.0x to 1.5x
+                        script.push_back(format_command("led_cycle_time", (long)(est_rev_time * multiplier)));
+                    }
                 }
 
                 if (random(100) < 60) { // Pulsing brightness effect
@@ -314,7 +333,14 @@ std::vector<std::string> generateScript(int duration_minutes) {
                 if (climax_effect < 25) { // 25% chance of motor-off fire effect
                     script.push_back("motor_speed:0");
                     script.push_back("hold:4000"); // Let it ramp down
-                    script.push_back("led_effect:fire");
+                    if (random(100) < 50) {
+                        script.push_back("led_effect:fire");
+                    } else {
+                        const char* palette = energetic_noise_palettes[random(energetic_noise_palettes.size())];
+                        char buffer[64];
+                        sprintf(buffer, "led_effect:noise,%s,25,15", palette);
+                        script.push_back(buffer);
+                    }
                     scene_duration_ms = random(8000, 15001);
                 } else if (climax_effect < 75) { // 50% chance of Rainbow + see-saw
                     scene_duration_ms = random(10000, 20001);
@@ -364,12 +390,29 @@ std::vector<std::string> generateScript(int duration_minutes) {
         script.push_back(format_phase_comment("COOL_DOWN"));
         script.push_back(format_command("led_brightness", (long)random(20, 41))); // Dim for cooldown
         script.push_back("led_reset");
-        script.push_back(format_command("motor_speed", (long)random(400, 501)));
-        script.push_back(format_command("led_background", (int)random(256), (int)random(5, 15))); // Dim background
-        script.push_back(format_command("led_tails", (int)random(256), (int)random(20, 30), 1)); // One long tail
-        script.push_back(format_command("hold", (long)cool_down_duration_ms / 2));
-        script.push_back(format_command("motor_speed", (long)random(200, 301)));
-        script.push_back(format_command("hold", (long)cool_down_duration_ms / 2));
+
+        int cooldown_effect = random(100);
+        if (cooldown_effect < 40) { // 40% chance for a final noise effect
+            script.push_back(format_command("motor_speed", (long)random(200, 301)));
+            const char* palette = calm_noise_palettes[random(calm_noise_palettes.size())];
+            char buffer[64];
+            sprintf(buffer, "led_effect:noise,%s,4,50", palette); // very slow and smooth
+            script.push_back(buffer);
+            script.push_back(format_command("hold", (long)cool_down_duration_ms));
+        } else if (cooldown_effect < 70) { // 30% chance for a twinkle effect
+            script.push_back(format_command("motor_speed", (long)random(200, 301)));
+            char buffer[64];
+            sprintf(buffer, "led_effect:twinkle,%d,80", (int)random(256));
+            script.push_back(buffer);
+            script.push_back(format_command("hold", (long)cool_down_duration_ms));
+        } else {
+            script.push_back(format_command("motor_speed", (long)random(400, 501)));
+            script.push_back(format_command("led_background", (int)random(256), (int)random(5, 15))); // Dim background
+            script.push_back(format_command("led_tails", (int)random(256), (int)random(20, 30), 1)); // One long tail
+            script.push_back(format_command("hold", (long)cool_down_duration_ms / 2));
+            script.push_back(format_command("motor_speed", (long)random(200, 301)));
+            script.push_back(format_command("hold", (long)cool_down_duration_ms / 2));
+        }
     }
 
     // --- 4. FINALE ---

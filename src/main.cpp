@@ -44,7 +44,7 @@
  * led_sine_hue:L,H   - Oscillate Comet Hue between L and H (0-255) synced to motor speed.
  * led_rainbow        - Cycle Comet Hue through full rainbow synced to motor speed.
  * led_sine_pulse:L,H - Oscillate Master Brightness between L and H % (0-100) synced to motor speed.
- * led_effect:NAME,P1.. - Activate a full-strip effect (e.g., 'fire', 'noise', 'twinkle'). Replaces comet tails.
+ * led_effect:NAME,P1.. - Activate a full-strip effect (e.g., 'fire', 'noise', 'marquee', 'twinkle'). Replaces comet tails.
  * led_reset          - Clear all dynamic effects, background, and comets to black.
  */
 
@@ -139,7 +139,8 @@ enum LedEffect {
     EFFECT_BLINK,
     EFFECT_NOISE,
     EFFECT_FIRE,
-    EFFECT_TWINKLE
+    EFFECT_TWINKLE,
+    EFFECT_MARQUEE
 };
 static LedEffect __activeLedEffect = EFFECT_COMET;
 
@@ -158,6 +159,19 @@ static uint16_t __noise_x, __noise_y, __noise_z;
 
 // Fire State
 static byte __heat[__NUM_LEDS];
+
+// Marquee State
+static uint8_t __marquee_hue = 0;
+static uint8_t __marquee_lit_width = 4;
+static uint8_t __marquee_dark_width = 8;
+static uint8_t __marquee_offset = 0;
+static unsigned long __last_marquee_update = 0;
+static int __marquee_speed_ms = 30;
+
+// Twinkle State
+static uint8_t __twinkle_hue = 0;
+static uint8_t __twinkle_density = 50; // 0-255 chance per frame
+
 
 // --- Dynamic LED State (Synced to Motor RPM) ---
 static bool __isHueSineActive = false;
@@ -651,8 +665,30 @@ void processCommand(std::string value) {
                 __activeLedEffect = EFFECT_FIRE;
                 log_t("LED Effect: Fire");
             } else if (effectName == "twinkle") {
+                size_t c2 = params.find(',', c1 + 1);
+                if (c1 != std::string::npos && c2 != std::string::npos) {
+                    __twinkle_hue = atoi(params.substr(c1 + 1, c2 - (c1 + 1)).c_str());
+                    __twinkle_density = constrain(atoi(params.substr(c2 + 1).c_str()), 1, 255);
+                } else { // allow just hue
+                    __twinkle_hue = atoi(params.substr(c1 + 1).c_str());
+                    __twinkle_density = 50;
+                }
                 __activeLedEffect = EFFECT_TWINKLE;
-                log_t("LED Effect: Twinkle");
+                log_t("LED Effect: Twinkle (Hue: %d, Density: %d)", __twinkle_hue, __twinkle_density);
+            } else if (effectName == "marquee") {
+                size_t c2 = params.find(',', c1 + 1);
+                size_t c3 = params.find(',', c2 + 1);
+                size_t c4 = params.find(',', c3 + 1);
+                if (c1 != std::string::npos && c2 != std::string::npos && c3 != std::string::npos && c4 != std::string::npos) {
+                    __marquee_hue = atoi(params.substr(c1 + 1, c2 - (c1 + 1)).c_str());
+                    __marquee_lit_width = max(1, atoi(params.substr(c2 + 1, c3 - (c2 + 1)).c_str()));
+                    __marquee_dark_width = max(1, atoi(params.substr(c3 + 1, c4 - (c3 + 1)).c_str()));
+                    __marquee_speed_ms = max(10, atoi(params.substr(c4 + 1).c_str()));
+                    __activeLedEffect = EFFECT_MARQUEE;
+                    log_t("LED Effect: Marquee (Hue: %d, Lit: %d, Dark: %d, Speed: %dms)", __marquee_hue, __marquee_lit_width, __marquee_dark_width, __marquee_speed_ms);
+                } else {
+                    log_t("Invalid marquee parameters. Expected: H,LW,DW,S");
+                }
             } else if (effectName == "noise") {
                 size_t c2 = params.find(',', c1 + 1);
                 size_t c3 = params.find(',', c2 + 1);
@@ -796,6 +832,38 @@ void runNoiseEffect() {
         __leds[i] = ColorFromPalette(__noise_palette, noise, 255, LINEARBLEND);
     }
     FastLED.show();
+}
+
+void runMarqueeEffect() {
+    if (millis() - __last_marquee_update > (unsigned long)__marquee_speed_ms) {
+        __last_marquee_update = millis();
+        uint8_t total_width = __marquee_lit_width + __marquee_dark_width;
+        if (total_width == 0) return;
+        __marquee_offset = (__marquee_offset + 1) % total_width;
+
+        for (int i = 0; i < __NUM_LEDS; i++) {
+            if (((i + __marquee_offset) % total_width) < __marquee_lit_width) {
+                __leds[i] = CHSV(__marquee_hue, 255, 255);
+            } else {
+                __leds[i] = CRGB::Black;
+            }
+        }
+        FastLED.show();
+    }
+}
+
+void runTwinkleEffect() {
+    if (millis() - __last_led_strip_update > 20) { // run at ~50fps
+        __last_led_strip_update = millis();
+        // Fade all pixels down by a small amount
+        fadeToBlackBy(__leds, __NUM_LEDS, 40);
+
+        // Randomly add a new sparkle
+        if (random8() < __twinkle_density) {
+            __leds[random16(__NUM_LEDS)] = CHSV(__twinkle_hue, 255, 255);
+        }
+        FastLED.show();
+    }
 }
 
 // --- BLE Callbacks ---
@@ -1049,7 +1117,10 @@ void loop() {
             runNoiseEffect();
             break;
         case EFFECT_TWINKLE:
-            //runTwinkleEffect(); // To be implemented
+            runTwinkleEffect();
+            break;
+        case EFFECT_MARQUEE:
+            runMarqueeEffect();
             break;
     }
 
