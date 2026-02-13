@@ -58,6 +58,8 @@
     - Any composition should at least have one pass through everything, which implies a min duration of 5 minutes for auto. That's 
       about the length of modern pop song. 
     - How about using motor_reverse to signal phase transitions and reserving the usage of that for that purpose?
+    - led_brightness should naturally start low with the introduction, ramp up to vibe, steadily increase through tension to
+      towards max brightness during climax. And then of course, ramp down with cool down. 
     - call out clearly in terminal output " -------------- BEGIN: <phase name> ----------------"
     - Upon completion of an auto-generated script, compose another script of the same duration and execute.
 
@@ -180,6 +182,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
     if (intro_duration_ms > 1000) {
         script.push_back("log_phase:INTRODUCTION");
         long intro_remaining_ms = intro_duration_ms;
+        script.push_back(format_command("led_brightness", (long)random(30, 51))); // Start dim
         script.push_back("motor_speed:0");
         script.push_back("led_reset");
         script.push_back("hold:2000"); intro_remaining_ms -= 2000;
@@ -207,6 +210,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
         // --- Generate a scene based on the current musical phase ---
         switch (currentPhase) {
             case VIBE: {
+                script.push_back(format_command("led_brightness", (long)random(60, 81))); // Vibe brightness
                 script.push_back("log_phase:VIBE");
                 scene_duration_ms = random(25000, 45001); // Longer, more stable scenes
 
@@ -240,6 +244,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
             }
 
             case TENSION: {
+                script.push_back(format_command("led_brightness", (long)random(80, 96))); // Tension brightness
                 script.push_back("log_phase:TENSION");
                 scene_duration_ms = random(15000, 25001); // Medium length, building scenes
 
@@ -273,6 +278,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
             }
 
             case CLIMAX: {
+                script.push_back("led_brightness:100"); // Climax brightness
                 script.push_back("log_phase:CLIMAX");
                 scene_duration_ms = random(10000, 20001); // Shorter, punchier scenes
                 script.push_back(format_command("motor_speed", (long)random(900, 1001))); // Max speed
@@ -307,6 +313,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
     // --- 3. COOL DOWN ---
     if (cool_down_duration_ms > 1000) {
         script.push_back("log_phase:COOL_DOWN");
+        script.push_back(format_command("led_brightness", (long)random(20, 41))); // Dim for cooldown
         script.push_back("led_reset");
         script.push_back(format_command("motor_speed", (long)random(400, 501)));
         script.push_back(format_command("led_background", (int)random(256), (int)random(5, 15))); // Dim background
