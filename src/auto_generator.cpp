@@ -38,8 +38,10 @@
     Like a musical piece. 
   - Some ideas for the different phases:
     INTRODUCTION: You could start with motor off, and gradually ramp up lighting activity, leading into the VIBE.
-    VIBE: Hang onto the vibe for a minute or so. Some variation to spark interest. Favor 1 or 2 led cycles more often.
-    TENSION: Really start to ramp things up. led cycles can step up towards 3 to 5. 
+    VIBE: Hang onto the vibe for a minute or so. Some variation to spark interest. Favor 1 or 2 led cycles more often. But also explore
+    longer led cycle times such that the cycle time is up to twice as long as estimated motor revolution time. 
+    TENSION: Really start to ramp things up. led cycles can step up towards 3 to 5 and should mostly have a cycle time equal to or greater
+    than motor revolution time.  
     CLIMAX: Go crazy! More led cycles. Rapid led cycle direction changes. Rapid color changes. Hang onto higher motor speeds. 
     COOL_DOWN: Taper off activity. Bring the audience down gently. 
 
@@ -55,6 +57,7 @@
     - VIBE, TENSION, and CLIMAX can cycle through to fill in the duration. 
     - Any composition should at least have one pass through everything, which implies a min duration of 5 minutes for auto. That's 
       about the length of modern pop song. 
+    - call out clearly in terminal output " -------------- BEGIN: <phase name> ----------------"  
 
 */
 #include "auto_generator.h"
@@ -94,6 +97,50 @@ std::string format_command(const char* cmd, int val1, int val2, int val3, int va
     char buffer[64];
     sprintf(buffer, "%s:%d,%d,%d,%d,%d", cmd, val1, val2, val3, val4, val5);
     return std::string(buffer);
+}
+
+// --- Speed Sync Lookup Table (from main.cpp) ---
+struct SpeedSyncPair {
+    int logicalSpeed;
+    int revTimeMs;
+};
+
+static const SpeedSyncPair __speedSyncTable[] = {
+    { 400, 5200 },
+    { 700, 2096 },
+    { 1000, 1250 }
+};
+static const int __speedSyncTableSize = sizeof(__speedSyncTable) / sizeof(SpeedSyncPair);
+
+// Estimates the motor revolution time based on the same logic as main.cpp's applySpeedSyncLookup.
+long estimateRevolutionTimeMs(int speed) {
+    if (__speedSyncTableSize < 2) return 2000; // Fallback
+
+    float targetRevTime = 0;
+
+    if (speed <= __speedSyncTable[0].logicalSpeed) {
+        // Linear extrapolation for speeds below the table's minimum
+        float m = (float)(__speedSyncTable[1].revTimeMs - __speedSyncTable[0].revTimeMs) /
+                  (float)(__speedSyncTable[1].logicalSpeed - __speedSyncTable[0].logicalSpeed);
+        targetRevTime = __speedSyncTable[0].revTimeMs + m * (speed - __speedSyncTable[0].logicalSpeed);
+    } else if (speed >= __speedSyncTable[__speedSyncTableSize - 1].logicalSpeed) {
+        // Linear extrapolation for speeds above the table's maximum
+        int last = __speedSyncTableSize - 1;
+        float m = (float)(__speedSyncTable[last].revTimeMs - __speedSyncTable[last-1].revTimeMs) /
+                  (float)(__speedSyncTable[last].logicalSpeed - __speedSyncTable[last-1].logicalSpeed);
+        targetRevTime = __speedSyncTable[last].revTimeMs + m * (speed - __speedSyncTable[last].logicalSpeed);
+    } else {
+        // Piecewise linear interpolation for speeds within the table's range
+        for (int i = 0; i < __speedSyncTableSize - 1; i++) {
+            if (speed >= __speedSyncTable[i].logicalSpeed && speed <= __speedSyncTable[i+1].logicalSpeed) {
+                float fraction = (float)(speed - __speedSyncTable[i].logicalSpeed) /
+                                 (float)(__speedSyncTable[i+1].logicalSpeed - __speedSyncTable[i].logicalSpeed);
+                targetRevTime = __speedSyncTable[i].revTimeMs + fraction * (__speedSyncTable[i+1].revTimeMs - __speedSyncTable[i].revTimeMs);
+                break;
+            }
+        }
+    }
+    return (long)max(500.0f, targetRevTime); // Ensure a minimum reasonable time
 }
 
 // Per guidance, the generator now follows a musical structure.
@@ -193,10 +240,17 @@ std::vector<std::string> generateScript(int duration_minutes) {
                     tail_hue = base_hue;
                 }
 
-                script.push_back(format_command("motor_speed", (long)random(500, 701)));
+                long motor_speed = random(500, 701);
+                script.push_back(format_command("motor_speed", motor_speed));
                 script.push_back(format_command("led_background", (int)bg_hue, (int)random(15, 31)));
                 script.push_back(format_command("led_tails", (int)tail_hue, (int)random(10, 25), (int)random(1, 3))); // Favor 1 or 2 tails
 
+                // Per guidance, explore longer cycle times
+                if (random(100) < 40) { // 40% chance to set a custom cycle time
+                    long est_rev_time = estimateRevolutionTimeMs(motor_speed);
+                    float multiplier = (float)random(100, 201) / 100.0f; // 1.0x to 2.0x
+                    script.push_back(format_command("led_cycle_time", (long)(est_rev_time * multiplier)));
+                }
                 if (random(100) < 50) { // Gentle sine hue effect
                     uint8_t hue_low = (tail_hue - 20 + 256) % 256;
                     uint8_t hue_high = (tail_hue + 20) % 256;
@@ -214,9 +268,17 @@ std::vector<std::string> generateScript(int duration_minutes) {
                 bg_hue = base_hue;
                 tail_hue = (base_hue + 128) % 256;
 
-                script.push_back(format_command("motor_speed", (long)random(750, 951))); // Ramp up speed
+                long motor_speed = random(750, 951);
+                script.push_back(format_command("motor_speed", motor_speed)); // Ramp up speed
                 script.push_back(format_command("led_background", (int)bg_hue, (int)random(25, 41)));
                 script.push_back(format_command("led_tails", (int)tail_hue, (int)random(5, 15), (int)random(3, 6)));
+
+                // Per guidance, cycle time >= motor revolution time
+                if (random(100) < 75) { // 75% chance to set a custom cycle time
+                    long est_rev_time = estimateRevolutionTimeMs(motor_speed);
+                    float multiplier = (float)random(100, 151) / 100.0f; // 1.0x to 1.5x
+                    script.push_back(format_command("led_cycle_time", (long)(est_rev_time * multiplier)));
+                }
 
                 if (random(100) < 60) { // Pulsing brightness effect
                     script.push_back(format_command("led_sine_pulse", (int)random(20, 51), (int)random(80, 101)));
