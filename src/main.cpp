@@ -57,7 +57,7 @@ static const int __PHYSICAL_MIN_SPEED = 500; // The PWM duty cycle to overcome f
 
 static const int __LOGICAL_MAX_SPEED = 1000; // A linear scale for speed control
 static const int __LOGICAL_SPEED_INCREMENT = 50;
-static const int __LOGICAL_INITIAL_SPEED = 400; // The default logical speed
+static const int __LOGICAL_INITIAL_SPEED = 600; // The default logical speed
 static const int __LOGICAL_REVERSE_INTERMEDIATE_SPEED = 200; // The speed to ramp down to during a reversal
 
 // Ramping settings
