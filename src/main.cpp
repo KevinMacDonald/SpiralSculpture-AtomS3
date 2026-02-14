@@ -349,6 +349,16 @@ void applySpeedSyncLookup(int speed) {
 }
 
 /**
+ * @brief The single common function that applies a display brightness value,
+ * correctly scaling it with the global master brightness.
+ * @param display_brightness_8bit The requested display brightness (0-255).
+ */
+void applyBrightness(uint8_t display_brightness_8bit) {
+    uint8_t final_brightness = scale8(__globalMasterBrightness, display_brightness_8bit);
+    FastLED.setBrightness(final_brightness);
+}
+
+/**
  * @brief Sets the final FastLED brightness by scaling a display percentage
  * with the global master brightness.
  * @param percent The requested display brightness (0-100).
@@ -358,7 +368,7 @@ void setFinalBrightnessFromDisplayPercent(int percent) {
     uint8_t display_val_8bit = (__lastDisplayBrightnessPercent * 255) / 100;
     uint8_t final_brightness = scale8(__globalMasterBrightness, display_val_8bit);
     log_t("BRIGHTNESS: Global: %d/255, Display: %d%% -> %d/255. Final set to: %d/255", __globalMasterBrightness, __lastDisplayBrightnessPercent, display_val_8bit, final_brightness);
-    FastLED.setBrightness(final_brightness);
+    applyBrightness(display_val_8bit);
 }
 // --- Core Motor & Mapping Functions ---
 /**
@@ -1065,7 +1075,7 @@ void loop() {
             uint8_t pulse_val = (uint8_t)beatsin88(bpm88, __pulseSineLow, __pulseSineHigh);
             uint8_t final_brightness = scale8(__globalMasterBrightness, pulse_val);
             log_t("PULSE_BRIGHTNESS: Global: %d/255, Pulse: %d/255. Final set to: %d/255", __globalMasterBrightness, pulse_val, final_brightness);
-            FastLED.setBrightness(final_brightness);
+            applyBrightness(pulse_val);
         }
     }
 
