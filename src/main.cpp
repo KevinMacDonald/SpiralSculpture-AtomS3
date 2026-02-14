@@ -1074,7 +1074,7 @@ void loop() {
         if (__isPulseSineActive) {
             uint8_t pulse_val = (uint8_t)beatsin88(bpm88, __pulseSineLow, __pulseSineHigh);
             uint8_t final_brightness = scale8(__globalMasterBrightness, pulse_val);
-            log_t("PULSE_BRIGHTNESS: Global: %d/255, Pulse: %d/255. Final set to: %d/255", __globalMasterBrightness, pulse_val, final_brightness);
+            // log_t("PULSE_BRIGHTNESS: Global: %d/255, Pulse: %d/255. Final set to: %d/255", __globalMasterBrightness, pulse_val, final_brightness);
             applyBrightness(pulse_val);
         }
     }
