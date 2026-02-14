@@ -156,9 +156,9 @@ std::vector<std::string> generateScript(int duration_minutes) {
     long main_body_duration_ms = total_duration_ms - intro_duration_ms - cool_down_duration_ms;
     if (main_body_duration_ms < 0) main_body_duration_ms = 0;
 
-    const long avg_vibe_ms = (25000 + 45001) / 2;
+    const long avg_vibe_ms = (20000 + 30001) / 2; // Keep scenes moving
     const long avg_tension_ms = (15000 + 25001) / 2;
-    const long avg_climax_ms = (10000 + 20001) / 2;
+    const long avg_climax_ms = (75000 + 90001) / 2; // Longer, multi-part climax
     const long avg_cycle_ms = avg_vibe_ms + avg_tension_ms + avg_climax_ms;
     int num_cycles = (avg_cycle_ms > 0) ? (main_body_duration_ms / avg_cycle_ms) : 0;
 
@@ -244,7 +244,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
             case VIBE: {
                 script.push_back(format_phase_comment("VIBE"));
                 script.push_back(format_command("led_brightness", (long)random(60, 81))); // Vibe brightness
-                scene_duration_ms = random(25000, 45001); // Longer, more stable scenes
+                scene_duration_ms = random(20000, 30001); // Shorter scenes to keep things moving
 
                 // Colors: Harmonious (Analogous/Monochromatic)
                 if (random(100) < 70) { // 70% Analogous
@@ -327,46 +327,80 @@ std::vector<std::string> generateScript(int duration_minutes) {
 
             case CLIMAX: {
                 script.push_back(format_phase_comment("CLIMAX"));
-                script.push_back("led_brightness:100"); // Climax brightness
+                script.push_back("led_brightness:100"); // Max brightness
 
-                int climax_effect = random(100);
-                if (climax_effect < 25) { // 25% chance of motor-off fire effect
-                    script.push_back("motor_speed:0");
-                    script.push_back("hold:4000"); // Let it ramp down
-                    if (random(100) < 50) {
-                        script.push_back("led_effect:fire");
-                    } else {
-                        const char* palette = energetic_noise_palettes[random(energetic_noise_palettes.size())];
-                        char buffer[64];
-                        sprintf(buffer, "led_effect:noise,%s,25,15", palette);
-                        script.push_back(buffer);
+                // A longer, multi-part climax with 2-3 scenes.
+                long climax_total_duration_ms = random(75000, 90001);
+                int num_scenes = random(2, 4); // 2 or 3 scenes
+                long duration_per_scene = climax_total_duration_ms / num_scenes;
+
+                for (int i = 0; i < num_scenes; ++i) {
+                    long current_scene_duration = duration_per_scene;
+                    long remaining_total_time = (total_duration_ms - cool_down_duration_ms) - accumulated_duration_ms;
+                    if (current_scene_duration > remaining_total_time && remaining_total_time > 1000) {
+                        current_scene_duration = remaining_total_time;
                     }
-                    scene_duration_ms = random(8000, 15001);
-                } else if (climax_effect < 75) { // 50% chance of Rainbow + see-saw
-                    scene_duration_ms = random(10000, 20001);
-                    script.push_back(format_command("motor_speed", (long)random(900, 1001)));
-                    script.push_back("led_rainbow");
-                    script.push_back(format_command("led_tails", 0, (int)random(10, 20), (int)random(3, 6)));
+                    if (current_scene_duration <= 1000) break;
 
-                    long time_left = scene_duration_ms;
-                    int num_reverses = random(3, 6); // 3 to 5 reverses for more aggression
-                    long hold_per_reverse = time_left / (num_reverses + 1);
+                    int effect_choice = random(100);
+                    long hold_time = current_scene_duration;
 
-                    if (hold_per_reverse > 500) { // Only do this if holds are meaningful
-                        for(int i=0; i<num_reverses; i++) {
-                            script.push_back(format_command("hold", hold_per_reverse));
-                            script.push_back("led_reverse");
-                            time_left -= hold_per_reverse;
+                    // Per guidance, increase use of marquee effect.
+                    if (effect_choice < 40) { // 40% marquee (still or high speed)
+                        uint8_t marquee_hue = random(256);
+                        char buffer[64];
+                        if (random(100) < 40) { // motor still
+                            script.push_back("motor_speed:0");
+                            script.push_back("hold:2000"); // wait for motor to stop
+                            hold_time = max(1000L, hold_time - 2000L);
+                            sprintf(buffer, "led_effect:marquee,%d,%d,%d,%d", marquee_hue, (int)random(2,5), (int)random(4,10), (int)random(75, 121));
+                        } else { // motor high speed
+                            script.push_back(format_command("motor_speed", (long)random(900, 1001)));
+                            sprintf(buffer, "led_effect:marquee,%d,%d,%d,%d", marquee_hue, (int)random(2,5), (int)random(4,10), (int)random(25, 76));
+                        }
+                        script.push_back(buffer);
+
+                    } else if (effect_choice < 75) { // 35% Rainbow + see-saw
+                        script.push_back(format_command("motor_speed", (long)random(900, 1001)));
+                        script.push_back("led_rainbow");
+                        script.push_back(format_command("led_tails", 0, (int)random(10, 20), (int)random(4, 7)));
+
+                        int num_reverses = random(2, 5); // 2 to 4 reverses
+                        long hold_per_reverse = hold_time / (num_reverses + 1);
+
+                        if (hold_per_reverse > 500) {
+                            for(int j=0; j<num_reverses; j++) {
+                                script.push_back(format_command("hold", hold_per_reverse));
+                                script.push_back("led_reverse");
+                                hold_time -= hold_per_reverse;
+                            }
+                        }
+                    } else { // 25% fire/noise or blink
+                        if (random(100) < 50) {
+                            script.push_back("motor_speed:0");
+                            script.push_back("hold:4000");
+                            hold_time = max(1000L, hold_time - 4000L);
+                            if (random(100) < 50) {
+                                script.push_back("led_effect:fire");
+                            } else {
+                                const char* palette = energetic_noise_palettes[random(energetic_noise_palettes.size())];
+                                char buffer[64];
+                                sprintf(buffer, "led_effect:noise,%s,25,15", palette);
+                                script.push_back(buffer);
+                            }
+                        } else {
+                            script.push_back(format_command("motor_speed", (long)random(950, 1001)));
+                            uint8_t blink_hue = random(256);
+                            int blink_count = random(8, 15);
+                            script.push_back(format_command("led_blink", (int)blink_hue, 80, 80, 150, blink_count));
+                            // blink is self-timed, but we need a hold to fill the scene duration
                         }
                     }
-                    scene_duration_ms = time_left > 0 ? time_left : 0;
-                } else { // 25% chance of strobing blink finish
-                    scene_duration_ms = random(10000, 20001);
-                    script.push_back(format_command("motor_speed", (long)random(900, 1001)));
-                    uint8_t blink_hue = random(256);
-                    int blink_count = random(5, 11);
-                    script.push_back(format_command("led_blink", (int)blink_hue, 100, 100, 200, blink_count));
-                    scene_duration_ms = 1500; // A short hold after the blink finishes
+
+                    if (hold_time > 0) {
+                        script.push_back(format_command("hold", hold_time));
+                    }
+                    accumulated_duration_ms += current_scene_duration;
                 }
 
                 // Per guidance, use motor_reverse to signal the transition out of CLIMAX
@@ -375,6 +409,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
                     accumulated_duration_ms += DEFAULT_RAMP_DURATION_MS + 1000;
                 }
                 currentPhase = VIBE; // Transition back to start
+                scene_duration_ms = 0; // We handled holds inside this phase
                 break;
             }
         }
