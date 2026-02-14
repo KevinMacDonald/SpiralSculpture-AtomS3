@@ -78,6 +78,8 @@ static const int __LED_STRIP_PIN = 2;  // Grove Port Pin (Yellow wire) on AtomS3
 static const int __NUM_LEDS = 198;      // Number of LEDs on your strip.
 static const int __VIRTUAL_GAP = 25;    // Non-existent pixels to match mechanical rotation
 static const int __LOGICAL_NUM_LEDS = __NUM_LEDS + __VIRTUAL_GAP;
+static const uint8_t __INITIAL_GLOBAL_BRIGHTNESS = 76;  //30% initially. 100% is really quite bright in a darkened room.
+
 
 // --- Remote Control ---
 // See the following for generating UUIDs:
@@ -120,7 +122,7 @@ static CRGB __onboard_led[1];
 static CRGB __leds[__NUM_LEDS];
 static int __led_position = 0;
 static bool __isLedReversed = false;    
-static uint8_t __globalMasterBrightness = 255; // Global master brightness (0-255)
+static uint8_t __globalMasterBrightness = __INITIAL_GLOBAL_BRIGHTNESS; // Global master brightness (0-255)
 static int __lastDisplayBrightnessPercent = 100; // Last requested display brightness %
 static uint8_t __bgHue = 160;          // Default to Blue (160)
 static uint8_t __bgBrightness = 76;    // Default to 30% (76/255)
@@ -539,11 +541,15 @@ void processCommand(std::string value) {
         } else if (cmd == "led_global_brightness") {
             int brightness_pct = constrain(val, 0, 100);
             __globalMasterBrightness = (uint8_t)((brightness_pct * 255) / 100);
-            if (!__isPulseSineActive) { // If pulse is not active, re-apply the last display brightness
+            // If a pulse effect isn't active, we must re-apply the last static display brightness.
+            // This ensures the new global master brightness takes effect immediately by re-scaling the current display level.
+            if (!__isPulseSineActive) {
                 setFinalBrightnessFromDisplayPercent(__lastDisplayBrightnessPercent);
             }
             log_t("LED Global Master Brightness set to: %d%% (%d/255)", brightness_pct, __globalMasterBrightness);
-        } else if (cmd == "led_display_brightness") { // This command now also deactivates pulse sine
+        } else if (cmd == "led_display_brightness") {
+            // Deactivate any running pulse effect. Setting a static display brightness
+            // is mutually exclusive with a dynamic pulse, so the static command takes precedence.
             __isPulseSineActive = false;
             int brightness_pct = constrain(val, 0, 100);
             setFinalBrightnessFromDisplayPercent(brightness_pct);
