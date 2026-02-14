@@ -848,6 +848,8 @@ void runFireEffect() {
         CRGB color = HeatColor(__heat[j]);
         __leds[j] = color;
     }
+    // The show() call uses the master brightness value that was last set by
+    // applyBrightness(), which correctly scales display brightness by the global master brightness.
     FastLED.show();
 }
 
@@ -860,6 +862,8 @@ void runNoiseEffect() {
         uint8_t noise = inoise8(__noise_x + i * __noise_scale, __noise_y, __noise_z);
         __leds[i] = ColorFromPalette(__noise_palette, noise, 255, LINEARBLEND);
     }
+    // The show() call uses the master brightness value that was last set by
+    // applyBrightness(), which correctly scales display brightness by the global master brightness.
     FastLED.show();
 }
 
@@ -877,6 +881,8 @@ void runMarqueeEffect() {
                 __leds[i] = CRGB::Black;
             }
         }
+        // The show() call uses the master brightness value that was last set by
+        // applyBrightness(), which correctly scales display brightness by the global master brightness.
         FastLED.show();
     }
 }
@@ -891,6 +897,8 @@ void runTwinkleEffect() {
         if (random8() < __twinkle_density) {
             __leds[random16(__NUM_LEDS)] = CHSV(__twinkle_hue, 255, 255);
         }
+        // The show() call uses the master brightness value that was last set by
+        // applyBrightness(), which correctly scales display brightness by the global master brightness.
         FastLED.show();
     }
 }
@@ -1100,6 +1108,8 @@ void loop() {
                         bri = map(downElapsed, 0, __blinkDownDuration, __blinkMaxBri, 0);
                     }
                     fill_solid(__leds, __NUM_LEDS, CHSV(__blinkHue, 255, bri));
+                    // The show() call uses the master brightness value that was last set by
+                    // applyBrightness(), which correctly scales display brightness by the global master brightness.
                     FastLED.show();
                 }
             }
@@ -1131,6 +1141,8 @@ void loop() {
                         int pos = (__led_position + j * (__LOGICAL_NUM_LEDS / __cometCount)) % __LOGICAL_NUM_LEDS;
                         if (pos < __NUM_LEDS) __leds[pos] = CHSV(__cometHue, 255, 255);
                     }
+                    // The show() call uses the master brightness value that was last set by
+                    // applyBrightness(), which correctly scales display brightness by the global master brightness.
                     FastLED.show();
                 }
             }
