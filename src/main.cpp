@@ -21,7 +21,8 @@
  * 
  * motor_speed:XXX    - Set motor logical speed (0-1000). Example: "motor_speed:500"
  * motor_ramp:XXXX    - Set duration (ms) for a full speed ramp (0 to 1000). Example: "motor_ramp:4000"
- * led_brightness:XX  - Set global master brightness percentage (0-100). Example: "led_brightness:75"
+ * led_global_brightness:XX - Set global master brightness percentage (0-100). This is the master scaler for all light output.
+ * led_display_brightness:XX - Set scene/display brightness percentage (0-100). This is scaled by the global master brightness.
  * led_background:H,B - Set background Hue (0-255) and Brightness % (0-50). Example: "led_background:160,20"
  * led_tails:H,L,C    - Set Comet Hue (0-255), Tail Length (LEDs), and Count. Example: "led_tails:0,15,3"
  * led_cycle_time:MS  - Set absolute time (ms) for one full LED revolution. Example: "led_cycle_time:5000"
@@ -43,7 +44,7 @@
  * led_blink:H,B,U,D,C - Pulse Hue (0-255), Brightness % (0-100), Ramp Up (ms), Ramp Down (ms), Count (0=loop).
  * led_sine_hue:L,H   - Oscillate Comet Hue between L and H (0-255) synced to motor speed.
  * led_rainbow        - Cycle Comet Hue through full rainbow synced to motor speed.
- * led_sine_pulse:L,H - Oscillate Master Brightness between L and H % (0-100) synced to motor speed.
+ * led_sine_pulse:L,H - Oscillate Display Brightness between L and H % (0-100) synced to motor speed. Scaled by Global Master Brightness.
  * led_effect:NAME,P1.. - Activate a full-strip effect (e.g., 'fire', 'noise', 'marquee', 'twinkle'). Replaces comet tails.
  * led_reset          - Clear all dynamic effects, background, and comets to black.
  */
@@ -118,8 +119,9 @@ const int g_speedSyncTableSize = sizeof(g_speedSyncTable) / sizeof(SpeedSyncPair
 static CRGB __onboard_led[1];
 static CRGB __leds[__NUM_LEDS];
 static int __led_position = 0;
-static bool __isLedReversed = false;
-static uint8_t __masterBrightness = 255; // Global master brightness (0-255)
+static bool __isLedReversed = false;    
+static uint8_t __globalMasterBrightness = 255; // Global master brightness (0-255)
+static int __lastDisplayBrightnessPercent = 100; // Last requested display brightness %
 static uint8_t __bgHue = 160;          // Default to Blue (160)
 static uint8_t __bgBrightness = 76;    // Default to 30% (76/255)
 static uint8_t __cometHue = 0;         // Default to Red (0)
@@ -194,7 +196,7 @@ static int __autoModeDurationMinutes = 0;
 static const std::vector<std::string> __script_funky = {
     "led_reset",
     "hold:10000",
-    "led_brightness:75",
+    "led_display_brightness:75",
     "led_background:0,20",
     "led_rainbow",
     "hold:20001",
@@ -346,6 +348,18 @@ void applySpeedSyncLookup(int speed) {
     __ledIntervalMs = targetRevTime / (float)__LOGICAL_NUM_LEDS;
 }
 
+/**
+ * @brief Sets the final FastLED brightness by scaling a display percentage
+ * with the global master brightness.
+ * @param percent The requested display brightness (0-100).
+ */
+void setFinalBrightnessFromDisplayPercent(int percent) {
+    __lastDisplayBrightnessPercent = constrain(percent, 0, 100);
+    uint8_t display_val_8bit = (__lastDisplayBrightnessPercent * 255) / 100;
+    uint8_t final_brightness = scale8(__globalMasterBrightness, display_val_8bit);
+    log_t("BRIGHTNESS: Global: %d/255, Display: %d%% -> %d/255. Final set to: %d/255", __globalMasterBrightness, __lastDisplayBrightnessPercent, display_val_8bit, final_brightness);
+    FastLED.setBrightness(final_brightness);
+}
 // --- Core Motor & Mapping Functions ---
 /**
  * @brief Sets the raw PWM duty cycle for the motor channels.
@@ -512,12 +526,18 @@ void processCommand(std::string value) {
             val = constrain(val, 0, 10000);
             __currentRampDuration = val;
             log_t("Set Motor Ramp Duration: %d", __currentRampDuration);
-        } else if (cmd == "led_brightness") { // This command now also deactivates pulse sine
+        } else if (cmd == "led_global_brightness") {
+            int brightness_pct = constrain(val, 0, 100);
+            __globalMasterBrightness = (uint8_t)((brightness_pct * 255) / 100);
+            if (!__isPulseSineActive) { // If pulse is not active, re-apply the last display brightness
+                setFinalBrightnessFromDisplayPercent(__lastDisplayBrightnessPercent);
+            }
+            log_t("LED Global Master Brightness set to: %d%% (%d/255)", brightness_pct, __globalMasterBrightness);
+        } else if (cmd == "led_display_brightness") { // This command now also deactivates pulse sine
             __isPulseSineActive = false;
             int brightness_pct = constrain(val, 0, 100);
-            __masterBrightness = (uint8_t)((brightness_pct * 255) / 100);
-            FastLED.setBrightness(__masterBrightness);
-            log_t("LED Master Brightness set to: %d%% (%d/255)", brightness_pct, __masterBrightness);
+            setFinalBrightnessFromDisplayPercent(brightness_pct);
+            log_t("LED Display Brightness set to: %d%%", brightness_pct);
         } else if (cmd == "led_background") {
             std::string params = value.substr(colon_pos + 1);
             size_t comma_pos = params.find(',');
@@ -738,8 +758,7 @@ void processCommand(std::string value) {
         __activeLedEffect = EFFECT_COMET;
         __cometCount = 0;
         __isManualLedInterval = false;
-        __masterBrightness = 255;
-        FastLED.setBrightness(__masterBrightness);
+        setFinalBrightnessFromDisplayPercent(100);
         FastLED.clear(true);
         log_t("LEDs reset to black/static.");
     } else if (value == "motor_start") {
@@ -752,7 +771,8 @@ void processCommand(std::string value) {
         __isPulseSineActive = false;
         __isLedReversed = false;
         __speedSetting = __LOGICAL_INITIAL_SPEED;
-        __masterBrightness = 255;
+        // __globalMasterBrightness is NOT reset, so it persists across resets.
+        setFinalBrightnessFromDisplayPercent(100);
         __bgHue = 160;
         __bgBrightness = 76;
         __cometHue = 0;
@@ -761,7 +781,6 @@ void processCommand(std::string value) {
         __isManualLedInterval = false;
         __activeLedEffect = EFFECT_COMET;
         __currentRampDuration = DEFAULT_RAMP_DURATION_MS;
-        FastLED.setBrightness(__masterBrightness);
         triggerSetSpeed(__speedSetting);
         processCommand("led_rainbow"); // Add led_rainbow after system reset
         log_t("System reset to defaults and started.");
@@ -924,7 +943,7 @@ void setup() {
 
     // Set a safety power limit (5V, 500mA is safe for AtomS3 internal regulator)
     FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);
-    FastLED.setBrightness(__masterBrightness);
+    setFinalBrightnessFromDisplayPercent(100);
 
     // Immediate blackout to overwrite any RMT initialization glitches
     FastLED.showColor(CRGB::Black); 
@@ -968,18 +987,22 @@ void loop() {
 
     // --- Handle BLE Commands ---
     if (__bleCommandAvailable) {
-        std::string cmd = __bleCommandBuffer;
+        std::string cmd_str = __bleCommandBuffer;
         __bleCommandAvailable = false;
 
-        // Only allow system_reset to interrupt a script
-        if (cmd == "system_reset" || cmd == "system_off") {
-            __isScriptRunning = false;
-            __isAutoModeActive = false; // Stop auto-mode looping as well
-            processCommand(cmd);
-        } else if (!__isScriptRunning) {
-            processCommand(cmd);
+        // Per your feedback, led_global_brightness must always be processed, even during a script.
+        if (cmd_str.rfind("led_global_brightness", 0) == 0) {
+            processCommand(cmd_str);
+        }
+        // system_reset and system_off can also interrupt a script.
+        else if (cmd_str == "system_reset" || cmd_str == "system_off") {
+            __isScriptRunning = false; // Stop the script
+            __isAutoModeActive = false; // Stop auto-mode looping
+            processCommand(cmd_str);
+        } else if (!__isScriptRunning) { // If no script is running, process any command.
+            processCommand(cmd_str);
         } else {
-            log_t("BLE command ignored (Script running): %s", cmd.c_str());
+            log_t("BLE command ignored (Script running): %s", cmd_str.c_str());
         }
     }
 
@@ -1039,7 +1062,10 @@ void loop() {
         }
 
         if (__isPulseSineActive) {
-            FastLED.setBrightness((uint8_t)beatsin88(bpm88, __pulseSineLow, __pulseSineHigh));
+            uint8_t pulse_val = (uint8_t)beatsin88(bpm88, __pulseSineLow, __pulseSineHigh);
+            uint8_t final_brightness = scale8(__globalMasterBrightness, pulse_val);
+            log_t("PULSE_BRIGHTNESS: Global: %d/255, Pulse: %d/255. Final set to: %d/255", __globalMasterBrightness, pulse_val, final_brightness);
+            FastLED.setBrightness(final_brightness);
         }
     }
 
@@ -1071,16 +1097,6 @@ void loop() {
         }
         case EFFECT_COMET: {
             if (__isMotorRunning && __currentLogicalSpeed > 0) {
-                // 1. Update dynamic parameters (Sine/Rainbow) for the comet
-                if (__isRainbowActive || __isHueSineActive || __isPulseSineActive) {
-                    float revTime = __ledIntervalMs * (float)__LOGICAL_NUM_LEDS;
-                    uint16_t bpm88 = (revTime > 0) ? (uint16_t)(15360000.0f / revTime) : 0;
-
-                    if (__isRainbowActive) __cometHue = beat88(bpm88) >> 8;
-                    else if (__isHueSineActive) __cometHue = (uint8_t)beatsin88(bpm88, __hueSineLow, __hueSineHigh);
-                    if (__isPulseSineActive) FastLED.setBrightness((uint8_t)beatsin88(bpm88, __pulseSineLow, __pulseSineHigh));
-                }
-
                 unsigned long dynamicInterval = (unsigned long)max(1.0f, __ledIntervalMs);
                 if (millis() - __last_led_strip_update > dynamicInterval) {
                     __last_led_strip_update = millis();

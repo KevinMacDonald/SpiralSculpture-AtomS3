@@ -55,6 +55,11 @@
     with the light show. So generally I am suggesting that led cycling works best in combination with motor rotation, wherease these more
     advanced light patterns would benefit from or more the min 500 motor speed. 
 
+    On the subject of brightness, it is very important, regardless of what is specified in any script, that I can scale down the brightness
+    of everything by invoking the led_global_brightness command. All brightness settings should scale off the global master brightness. This 
+    allows any script including auto-generated ones to run exactly as they wish, but if a command tries to set brightness at 100% that is
+    still scaled by the global master brightness. That's why we call it "global master" brightness.
+
 
   - Some suggestions for phase durations:
     INTRODUCTION: About 30 seconds.
@@ -69,7 +74,7 @@
     - Any composition should at least have one pass through everything, which implies a min duration of 5 minutes for auto. That's 
       about the length of modern pop song. 
     - How about using motor_reverse to signal phase transitions and reserving the usage of that for that purpose?
-    - led_brightness should naturally start low with the introduction, ramp up to vibe, steadily increase through tension to
+    - led_display_brightness should naturally start low with the introduction, ramp up to vibe, steadily increase through tension to
       towards max brightness during climax. And then of course, ramp down with cool down. 
     - call out clearly in terminal output " -------------- BEGIN: <phase name> ----------------"
     - Upon completion of an auto-generated script, compose another script of the same duration and execute.
@@ -194,7 +199,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
     }
     AUTO_LOG("  - COOL_DOWN:    ~%lds", cool_down_duration_ms / 1000);
 
-    script.push_back("system_reset");
+    script.push_back("led_reset"); // Use led_reset to clear effects without touching global brightness or motor.
     script.push_back("hold:1000");
     accumulated_duration_ms += 1000;
 
@@ -202,8 +207,8 @@ std::vector<std::string> generateScript(int duration_minutes) {
     if (intro_duration_ms > 1000) {
         script.push_back(format_phase_comment("INTRODUCTION"));
         long intro_remaining_ms = intro_duration_ms;
-        script.push_back(format_command("led_brightness", (long)random(30, 51))); // Start dim
-        script.push_back("led_reset");
+        script.push_back("led_reset"); // Reset LED state first.
+        script.push_back(format_command("led_display_brightness", (long)random(30, 51))); // Start dim
 
         // Per guidance, showcase a full-strip effect with motor off.
         if (random(100) < 50) { // 50% chance to start with a noise effect
@@ -243,7 +248,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
         switch (currentPhase) {
             case VIBE: {
                 script.push_back(format_phase_comment("VIBE"));
-                script.push_back(format_command("led_brightness", (long)random(60, 81))); // Vibe brightness
+                script.push_back(format_command("led_display_brightness", (long)random(60, 81))); // Vibe brightness
                 scene_duration_ms = random(20000, 30001); // Shorter scenes to keep things moving
 
                 // Colors: Harmonious (Analogous/Monochromatic)
@@ -285,7 +290,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
 
             case TENSION: {
                 script.push_back(format_phase_comment("TENSION"));
-                script.push_back(format_command("led_brightness", (long)random(80, 96))); // Tension brightness
+                script.push_back(format_command("led_display_brightness", (long)random(80, 96))); // Tension brightness
                 scene_duration_ms = random(15000, 25001); // Medium length, building scenes
 
                 // Colors: High-contrast (Complementary)
@@ -312,8 +317,8 @@ std::vector<std::string> generateScript(int duration_minutes) {
                     }
                 }
 
-                if (random(100) < 60) { // Pulsing brightness effect
-                    script.push_back(format_command("led_sine_pulse", (int)random(20, 51), (int)random(80, 101)));
+                if (random(100) < 60) { // Pulsing brightness effect, kept within the tension range
+                    script.push_back(format_command("led_sine_pulse", (int)random(50, 71), (int)random(90, 96)));
                 }
 
                 // Per guidance, use motor_reverse to signal the transition to CLIMAX
@@ -327,7 +332,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
 
             case CLIMAX: {
                 script.push_back(format_phase_comment("CLIMAX"));
-                script.push_back("led_brightness:100"); // Max brightness
+                script.push_back("led_display_brightness:100"); // Max brightness
 
                 // A longer, multi-part climax with 2-3 scenes.
                 long climax_total_duration_ms = random(75000, 90001);
@@ -354,11 +359,41 @@ std::vector<std::string> generateScript(int duration_minutes) {
                             script.push_back("hold:2000"); // wait for motor to stop
                             hold_time = max(1000L, hold_time - 2000L);
                             sprintf(buffer, "led_effect:marquee,%d,%d,%d,%d", marquee_hue, (int)random(2,5), (int)random(4,10), (int)random(75, 121));
+                            script.push_back(buffer);
+
+                            // If hold is long, switch to a different static effect to add variety
+                            if (hold_time > 12000) {
+                                long half_hold = hold_time / 2;
+                                script.push_back(format_command("hold", half_hold));
+                                hold_time -= half_hold;
+
+                                if (random(100) < 50) {
+                                    script.push_back("led_effect:fire");
+                                } else {
+                                    const char* palette = energetic_noise_palettes[random(energetic_noise_palettes.size())];
+                                    char buffer2[64];
+                                    sprintf(buffer2, "led_effect:noise,%s,25,15", palette);
+                                    script.push_back(buffer2);
+                                }
+                            }
                         } else { // motor high speed
                             script.push_back(format_command("motor_speed", (long)random(900, 1001)));
                             sprintf(buffer, "led_effect:marquee,%d,%d,%d,%d", marquee_hue, (int)random(2,5), (int)random(4,10), (int)random(25, 76));
+                            script.push_back(buffer);
+
+                            // Break up the long hold with motor speed changes
+                            int num_changes = random(2, 4); // 2 or 3 changes
+                            if (num_changes > 1) {
+                                long hold_per_change = hold_time / num_changes;
+                                if (hold_per_change > 4000) { // Only if chunks are meaningful
+                                    for (int j = 0; j < num_changes - 1; j++) {
+                                        script.push_back(format_command("hold", hold_per_change));
+                                        script.push_back(format_command("motor_speed", (long)random(850, 1001)));
+                                        hold_time -= hold_per_change;
+                                    }
+                                }
+                            }
                         }
-                        script.push_back(buffer);
 
                     } else if (effect_choice < 75) { // 35% Rainbow + see-saw
                         script.push_back(format_command("motor_speed", (long)random(900, 1001)));
@@ -376,24 +411,52 @@ std::vector<std::string> generateScript(int duration_minutes) {
                             }
                         }
                     } else { // 25% fire/noise or blink
-                        if (random(100) < 50) {
+                        if (random(100) < 50) { // fire/noise
                             script.push_back("motor_speed:0");
                             script.push_back("hold:4000");
                             hold_time = max(1000L, hold_time - 4000L);
-                            if (random(100) < 50) {
-                                script.push_back("led_effect:fire");
-                            } else {
+
+                            bool use_fire_first = (random(100) < 50);
+                            if (use_fire_first) script.push_back("led_effect:fire");
+                            else {
                                 const char* palette = energetic_noise_palettes[random(energetic_noise_palettes.size())];
                                 char buffer[64];
                                 sprintf(buffer, "led_effect:noise,%s,25,15", palette);
                                 script.push_back(buffer);
                             }
-                        } else {
+
+                            // If the hold is long, switch to the other effect halfway through
+                            if (hold_time > 12000) {
+                                long half_hold = hold_time / 2;
+                                script.push_back(format_command("hold", half_hold));
+                                hold_time -= half_hold;
+
+                                if (use_fire_first) { // switch to noise
+                                    const char* palette = energetic_noise_palettes[random(energetic_noise_palettes.size())];
+                                    char buffer[64];
+                                    sprintf(buffer, "led_effect:noise,%s,25,15", palette);
+                                    script.push_back(buffer);
+                                } else { // switch to fire
+                                    script.push_back("led_effect:fire");
+                                }
+                            }
+                        } else { // blink
                             script.push_back(format_command("motor_speed", (long)random(950, 1001)));
                             uint8_t blink_hue = random(256);
-                            int blink_count = random(8, 15);
-                            script.push_back(format_command("led_blink", (int)blink_hue, 80, 80, 150, blink_count));
-                            // blink is self-timed, but we need a hold to fill the scene duration
+                            script.push_back(format_command("led_blink", (int)blink_hue, 100, 80, 150, 0 /* loop */));
+
+                            // Break up the long hold with motor speed changes
+                            int num_changes = random(2, 4); // 2 or 3 changes
+                            if (num_changes > 1) {
+                                long hold_per_change = hold_time / num_changes;
+                                if (hold_per_change > 4000) { // Only if chunks are meaningful
+                                    for (int j = 0; j < num_changes - 1; j++) {
+                                        script.push_back(format_command("hold", hold_per_change));
+                                        script.push_back(format_command("motor_speed", (long)random(900, 1001)));
+                                        hold_time -= hold_per_change;
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -423,7 +486,7 @@ std::vector<std::string> generateScript(int duration_minutes) {
     // --- 3. COOL DOWN ---
     if (cool_down_duration_ms > 1000) {
         script.push_back(format_phase_comment("COOL_DOWN"));
-        script.push_back(format_command("led_brightness", (long)random(20, 41))); // Dim for cooldown
+        script.push_back(format_command("led_display_brightness", (long)random(20, 41))); // Dim for cooldown
         script.push_back("led_reset");
 
         int cooldown_effect = random(100);
