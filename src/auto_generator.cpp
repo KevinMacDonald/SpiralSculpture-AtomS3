@@ -81,6 +81,26 @@
 
     Upon completion of an auto-generated script, compose another script of the same duration and execute. 
 
+    ------------------------------------ "auto_steady_rotate:MMM" -----------------------------
+    Similar to auto_mode, if the generated script runs it's course the system should generate another set of commands and run it again.
+    
+    This mode runs the motor in the default direction and the default speed, and maintains the motor in that speed and direction. 
+    This mode uses comet and marquee led effects only.
+    The intention of this mode is to focus on lighting effects that accentuate the steady motor rotation. To start off, let's try
+    creating a loop where the led effect rotation time starts off at 2x motor speed rotation time - which means the led effect rotation
+    is slower than motor speed, and then slowly increases to 0.5x motor speed - which means the led effect rotation is now faster
+    than the motor speed. Vary the motor speed in steps of 10% every 3 seconds, which should complete the loop every 30 seconds. 
+
+    For each loop, choose a new lighting effect using either comets or marquee. Then, choose new parameters for that effect, and then
+    hold those parameters steady for that loop. 
+    
+    For comets you can vary number and length of comets, and color. Perhaps there are other parameters as well.
+
+    For marquee you can vary similar parameters. 
+
+
+
+
 */
 #include "auto_generator.h"
 #include "shared.h"
