@@ -559,4 +559,102 @@ std::vector<std::string> generateScript(int duration_minutes) {
     return script;
 }
 
+std::vector<std::string> generateSteadyRotateScript(int duration_minutes) {
+    std::vector<std::string> script;
+    if (duration_minutes <= 0) return script;
+
+    // --- Configuration for auto_steady_rotate mode ---
+    const float AUTO_STEADY_ROTATE_LED_MOTOR_MAX_RATIO = 2.0;
+    const float AUTO_STEADY_ROTATE_LED_MOTOR_MIN_RATIO = 0.5;
+    const int AUTO_STEADY_ROTATE_LED_EFFECT_STEPS = 10;
+    const float AUTO_STEADY_ROTATE_LED_EFFECT_STEP_DURATION_S = 2.0;
+    const long STEADY_MOTOR_SPEED = 500; // Default speed for this mode
+
+    randomSeed(millis());
+    long total_duration_ms = duration_minutes * 60L * 1000L;
+    long accumulated_duration_ms = 0;
+
+    AUTO_LOG("Generating auto_steady_rotate script for %d minutes...", duration_minutes);
+
+    script.push_back(format_command("motor_speed", STEADY_MOTOR_SPEED));
+    script.push_back("hold:3000"); // Give motor time to spin up to steady speed
+    accumulated_duration_ms += 3000;
+
+    long step_duration_ms = (long)(AUTO_STEADY_ROTATE_LED_EFFECT_STEP_DURATION_S * 1000.0);
+    long one_way_ramp_duration_ms = AUTO_STEADY_ROTATE_LED_EFFECT_STEPS * step_duration_ms;
+
+    // Dynamic command limit
+    const long HEAP_SAFETY_MARGIN = 50 * 1024;
+    const int AVG_COMMAND_MEMORY_COST = 48;
+    const int ABSOLUTE_MAX_COMMANDS = 2000;
+    long free_heap = ESP.getFreeHeap();
+    long available_for_script = free_heap - HEAP_SAFETY_MARGIN;
+    int max_commands = 100;
+    if (available_for_script > 0) {
+        max_commands = min(ABSOLUTE_MAX_COMMANDS, (int)(available_for_script / AVG_COMMAND_MEMORY_COST));
+    }
+    AUTO_LOG("Heap: %ldB free. Dynamic max commands set to: %d", free_heap, max_commands);
+
+    while (accumulated_duration_ms < total_duration_ms && script.size() < max_commands - 25) {
+        script.push_back(format_phase_comment("NEW STEADY CYCLE"));
+
+        // 1. Choose effect and parameters for this cycle
+        bool use_comet = random(100) < 50;
+        uint8_t fg_hue = random(256);
+        uint8_t bg_hue = (fg_hue + random(80, 177)) % 256; // Contrasting bg
+
+        script.push_back("led_reset"); // Clear previous effects (and sets direction to forward)
+        if (use_comet) {
+            int length = random(15, 41); // 15-40
+            int num_tails = random(1, 4); // 1-3
+            script.push_back(format_command("led_tails", (int)fg_hue, length, num_tails));
+        } else { // marquee
+            int light_width = random(2, 6);
+            int dark_width = random(4, 11);
+            int speed = random(30, 81);
+            char buffer[64];
+            sprintf(buffer, "led_effect:marquee,%d,%d,%d,%d", fg_hue, light_width, dark_width, speed);
+            script.push_back(buffer);
+        }
+        script.push_back(format_command("led_background", (int)bg_hue, (int)random(10, 26)));
+
+        // 2. Randomly set LED direction. Assumes led_reset sets it to forward.
+        if (random(100) < 50) {
+            script.push_back("led_reverse");
+        }
+
+        long est_rev_time = calculate_rev_time_ms(STEADY_MOTOR_SPEED);
+
+        // 3. Ramp from MAX to MIN
+        script.push_back(format_phase_comment("Ramp Down LED Speed"));
+        for (int i = 0; i <= AUTO_STEADY_ROTATE_LED_EFFECT_STEPS; i++) {
+            float ratio = map(i, 0, AUTO_STEADY_ROTATE_LED_EFFECT_STEPS, (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MAX_RATIO * 100), (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MIN_RATIO * 100)) / 100.0f;
+            long cycle_time = (long)(est_rev_time * ratio);
+            script.push_back(format_command("led_cycle_time", cycle_time));
+            script.push_back(format_command("hold", step_duration_ms));
+        }
+        accumulated_duration_ms += one_way_ramp_duration_ms + step_duration_ms;
+
+        // 4. Ramp from MIN to MAX
+        script.push_back(format_phase_comment("Ramp Up LED Speed"));
+        for (int i = 0; i <= AUTO_STEADY_ROTATE_LED_EFFECT_STEPS; i++) {
+            float ratio = map(i, 0, AUTO_STEADY_ROTATE_LED_EFFECT_STEPS, (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MIN_RATIO * 100), (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MAX_RATIO * 100)) / 100.0f;
+            long cycle_time = (long)(est_rev_time * ratio);
+            script.push_back(format_command("led_cycle_time", cycle_time));
+            script.push_back(format_command("hold", step_duration_ms));
+        }
+        accumulated_duration_ms += one_way_ramp_duration_ms + step_duration_ms;
+    }
+
+    script.push_back("system_off");
+
+    AUTO_LOG("Generated %d script commands for auto_steady_rotate.", script.size());
+    Serial.println("\n--- BEGIN AUTO-STEADY-ROTATE SCRIPT ---");
+    for (const auto& cmd : script) { Serial.println(cmd.c_str()); }
+    Serial.println("--- END AUTO-STEADY-ROTATE SCRIPT ---");
+    Serial.printf("Total script lines generated: %d\n\n", (int)script.size());
+
+    return script;
+}
+
 } // namespace AutoGenerator

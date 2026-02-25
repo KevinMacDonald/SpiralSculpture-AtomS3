@@ -38,6 +38,7 @@
  * led_reverse        - Toggle the direction of LED animation cycling.
  * run_script:NAME    - Start a named script (e.g., "run_script:funky").
  * auto_mode:MMM      - Generate and run a script for MMM minutes.
+ * auto_steady_rotate:MMM - Generate and run a steady rotation script for MMM minutes.
  * auto_mode_debug:MMM - Generate and print a script for MMM minutes without running.
  * hold:XXXX          - (Script only) Wait XXXX ms before next command.
  * [comment]          - (Script only, internal) A comment line, logged to terminal and ignored.
@@ -190,9 +191,15 @@ static uint8_t __pulseSineHigh = 255;
 static bool __isScriptRunning = false;
 static int __scriptCommandIndex = 0;
 static unsigned long __scriptLastCommandTime = 0;
+static unsigned long __scriptStartTime = 0;
 static unsigned long __scriptHoldDuration = 0;
 static std::vector<std::string> __activeScriptCommands;
-static bool __isAutoModeActive = false;
+enum AutoModeType {
+    AUTO_MODE_NONE,
+    AUTO_MODE_NORMAL,
+    AUTO_MODE_STEADY_ROTATE
+};
+static AutoModeType __autoModeType = AUTO_MODE_NONE;
 static int __autoModeDurationMinutes = 0;
 
 static const std::vector<std::string> __script_funky = {
@@ -597,10 +604,10 @@ void processCommand(std::string value) {
             if (scriptName == "funky") {
                 __activeScriptCommands = __script_funky;
                 __scriptCommandIndex = 0;
-                __scriptLastCommandTime = millis();
+                __scriptStartTime = __scriptLastCommandTime = millis();
                 __scriptHoldDuration = 0;
                 __isScriptRunning = true;
-                __isAutoModeActive = false; // This is not an auto-mode script
+                __autoModeType = AUTO_MODE_NONE; // This is not an auto-mode script
                 log_t("Script started: funky");
             }
         } else if (cmd == "auto_mode" || cmd == "auto_mode_debug") {
@@ -608,22 +615,42 @@ void processCommand(std::string value) {
 
             // Stop any currently running script
             __isScriptRunning = false;
-            __isAutoModeActive = false; // Stop any previous auto mode loop
+            __autoModeType = AUTO_MODE_NONE; // Stop any previous auto mode loop
 
             __activeScriptCommands = AutoGenerator::generateScript(duration_minutes);
 
             if (cmd == "auto_mode" && !__activeScriptCommands.empty()) {
                 __scriptCommandIndex = 0;
-                __scriptLastCommandTime = millis();
+                __scriptStartTime = __scriptLastCommandTime = millis();
                 __scriptHoldDuration = 0;
                 __isScriptRunning = true;
-                __isAutoModeActive = true;
+                __autoModeType = AUTO_MODE_NORMAL;
                 __autoModeDurationMinutes = duration_minutes;
                 log_t("Auto-mode script started for %d minutes.", duration_minutes);
             } else {
                 // For debug mode, ensure auto mode is not active
-                __isAutoModeActive = false;
+                __autoModeType = AUTO_MODE_NONE;
                 log_t("Auto-mode debug script generated for %d minutes. Not executing.", duration_minutes);
+            }
+        } else if (cmd == "auto_steady_rotate" || cmd == "auto_steady_rotate_debug") {
+            int duration_minutes = constrain(val, 1, 240);
+
+            __isScriptRunning = false;
+            __autoModeType = AUTO_MODE_NONE; 
+
+            __activeScriptCommands = AutoGenerator::generateSteadyRotateScript(duration_minutes);
+
+            if (cmd == "auto_steady_rotate" && !__activeScriptCommands.empty()) {
+                __scriptCommandIndex = 0;
+                __scriptStartTime = __scriptLastCommandTime = millis();
+                __scriptHoldDuration = 0;
+                __isScriptRunning = true;
+                __autoModeType = AUTO_MODE_STEADY_ROTATE;
+                __autoModeDurationMinutes = duration_minutes;
+                log_t("Auto-steady-rotate script started for %d minutes.", duration_minutes);
+            } else {
+                __autoModeType = AUTO_MODE_NONE;
+                log_t("Auto-steady-rotate debug script generated for %d minutes. Not executing.", duration_minutes);
             }
         } else if (cmd == "hold") {
             if (__isScriptRunning) {
@@ -773,6 +800,7 @@ void processCommand(std::string value) {
         __isPulseSineActive = false;
         __activeLedEffect = EFFECT_COMET;
         __cometCount = 0;
+        __isLedReversed = false; // Also reset LED direction to forward
         __isManualLedInterval = false;
         setFinalBrightnessFromDisplayPercent(100);
         FastLED.clear(true);
@@ -785,6 +813,7 @@ void processCommand(std::string value) {
         __isHueSineActive = false;
         __isRainbowActive = false;
         __isPulseSineActive = false;
+        __autoModeType = AUTO_MODE_NONE;
         __isLedReversed = false;
         __speedSetting = __LOGICAL_INITIAL_SPEED;
         // __globalMasterBrightness is NOT reset, so it persists across resets.
@@ -1021,12 +1050,19 @@ void loop() {
         // system_reset and system_off can also interrupt a script.
         else if (cmd_str == "system_reset" || cmd_str == "system_off") {
             __isScriptRunning = false; // Stop the script
-            __isAutoModeActive = false; // Stop auto-mode looping
+            __autoModeType = AUTO_MODE_NONE; // Stop auto-mode looping
             processCommand(cmd_str);
         } else if (!__isScriptRunning) { // If no script is running, process any command.
             processCommand(cmd_str);
         } else {
-            log_t("BLE command ignored (Script running): %s", cmd_str.c_str());
+            // If a script is running, only allow specific commands through.
+            // For auto_steady_rotate, allow motor_speed to be overridden.
+            if (__autoModeType == AUTO_MODE_STEADY_ROTATE && cmd_str.rfind("motor_speed", 0) == 0) {
+                log_t("Processing motor_speed override during auto_steady_rotate.");
+                processCommand(cmd_str);
+            } else {
+                log_t("BLE command ignored (Script running): %s", cmd_str.c_str());
+            }
         }
     }
 
@@ -1036,15 +1072,22 @@ void loop() {
         if (millis() - __scriptLastCommandTime >= __scriptHoldDuration) {
             if (__scriptCommandIndex >= __activeScriptCommands.size()) {
                 // End of script reached
-                if (__isAutoModeActive) {
-                    log_t("Auto-mode script finished. Generating and starting next script...");
-                    __activeScriptCommands = AutoGenerator::generateScript(__autoModeDurationMinutes);
+                if (__autoModeType != AUTO_MODE_NONE) {
+                    log_t("Auto-mode script finished. Total runtime: %lu s. Generating and starting next script...", (millis() - __scriptStartTime) / 1000);
+                    
+                    if (__autoModeType == AUTO_MODE_NORMAL) {
+                        __activeScriptCommands = AutoGenerator::generateScript(__autoModeDurationMinutes);
+                    } else if (__autoModeType == AUTO_MODE_STEADY_ROTATE) {
+                        __activeScriptCommands = AutoGenerator::generateSteadyRotateScript(__autoModeDurationMinutes);
+                    }
+
                     if (!__activeScriptCommands.empty()) {
                         __scriptCommandIndex = 0;
+                        __scriptStartTime = __scriptLastCommandTime = millis();
                         // Continue to execute the first command of the new script in this same pass
                     } else {
                         // Something went wrong with generation, stop everything.
-                        __isAutoModeActive = false;
+                        __autoModeType = AUTO_MODE_NONE;
                         __isScriptRunning = false;
                         return; // exit script engine for this loop iteration
                     }
