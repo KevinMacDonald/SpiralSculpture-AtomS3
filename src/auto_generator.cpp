@@ -1,6 +1,7 @@
 /*
-            Auto-mode
- Triggered via the commmand: "auto_mode:mmm" where mmm is the duration in minutes. The code auto-generates a script much like the
+   ------------------------------------ "auto_mode:MMM" -----------------------------
+
+Triggered via the commmand: "auto_mode:mmm" where mmm is the duration in minutes. The code auto-generates a script much like the
  hardcoded "funky" script, and then plays it out. Also, add the command "auto_mode_debug:mmm" which does the same thing except it only outputs
  the generated commands to the terminal, but does not run them. 
 
@@ -81,25 +82,38 @@
 
     Upon completion of an auto-generated script, compose another script of the same duration and execute. 
 
-    ------------------------------------ "auto_steady_rotate:MMM" -----------------------------
+   ------------------------------------ "auto_steady_rotate:MMM" -----------------------------
     Similar to auto_mode, if the generated script runs it's course the system should generate another set of commands and run it again.
     
     This mode runs the motor in the default direction and the default speed, and maintains the motor in that speed and direction. 
-    This mode uses comet and marquee led effects only.
+    This mode uses comet and marquee led effects only. 
     The intention of this mode is to focus on lighting effects that accentuate the steady motor rotation. To start off, let's try
-    creating a loop where the led effect rotation time starts off at 2x motor speed rotation time - which means the led effect rotation
+    creating a cycle where the led effect rotation time starts off at 2x motor speed rotation time - which means the led effect rotation
     is slower than motor speed, and then slowly increases to 0.5x motor speed - which means the led effect rotation is now faster
-    than the motor speed. Vary the motor speed in steps of 10% every 3 seconds, which should complete the loop every 30 seconds. 
+    than the motor speed. Then, reverse the process back down to 2x motor speed. Provide constants for setting in code the 
+    max and min led effect rotation vs motor rotation values. Provide constants for setting in code the number of steps taken
+    to increase LED effect speed between min and max, and also the amount of time spent at each step. For example:
+    AUTO_STEADY_ROTATE_LED_MOTOR_MAX = 2.0;
+    AUTO_STEADY_ROTATE_LED_MOTOR_MIN = 0.5; 
+    AUTO_STEADY_ROTATE_LED_EFFECT_STEPS = 10;
+    AUTO_STEADY_ROTATE_LED_EFFECT_STEP_DURATION = 2.0; //seconds
+        
+    With the above initial settings, since we have 10 steps between min and max, each step held for 2 seconds, that would be 
+    20 seconds to ramp from MAX TO MIN, and then 20 seconds to ramp from MIN to MAX, creating a total cycle length of 40 seconds 
+    with the chosen led effect, before the next effect is chosen.    
 
-    For each loop, choose a new lighting effect using either comets or marquee. Then, choose new parameters for that effect, and then
-    hold those parameters steady for that loop. 
+    The direction of led effects can be chosen at random. So, sometimes WITH motor rotation, and sometimes AGAINST.
+
+    For each cycle, choose a new lighting effect using either comets or marquee. Then, choose new parameters for that effect, and then
+    hold those parameters steady for that cycle. 
     
-    For comets you can vary number and length of comets, and color. Perhaps there are other parameters as well.
+    For comets you can vary number and length of comets, and foreground and background colors. Perhaps there are other parameters as well.
 
-    For marquee you can vary similar parameters. 
+    For marquee you can vary the length of a marquee unit, and foreground and background colors. Are there other parameters to explore?
 
+    This mode should respect the led_global_brightness and motor_speed commands sent via bluetooth. 
 
-
+    If the end of the script is encountered for this mode, similiar to auto_mode, generate a new script and run it automatically. 
 
 */
 #include "auto_generator.h"
