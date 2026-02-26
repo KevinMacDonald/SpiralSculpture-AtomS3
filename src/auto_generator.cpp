@@ -564,8 +564,8 @@ std::vector<std::string> generateSteadyRotateScript(int duration_minutes) {
     if (duration_minutes <= 0) return script;
 
     // --- Configuration for auto_steady_rotate mode ---
-    const float AUTO_STEADY_ROTATE_LED_MOTOR_MAX_RATIO = 2.0;
-    const float AUTO_STEADY_ROTATE_LED_MOTOR_MIN_RATIO = 0.5;
+    const float AUTO_STEADY_ROTATE_LED_MOTOR_MAX_RATIO = 4.0;
+    const float AUTO_STEADY_ROTATE_LED_MOTOR_MIN_RATIO = 1.0;
     const int AUTO_STEADY_ROTATE_LED_EFFECT_STEPS = 10;
     const float AUTO_STEADY_ROTATE_LED_EFFECT_STEP_DURATION_S = 2.0;
     const long STEADY_MOTOR_SPEED = 500; // Default speed for this mode
@@ -606,14 +606,14 @@ std::vector<std::string> generateSteadyRotateScript(int duration_minutes) {
         script.push_back("led_reset"); // Clear previous effects (and sets direction to forward)
         if (use_comet) {
             int length = random(15, 41); // 15-40
-            int num_tails = random(1, 4); // 1-3
+            int num_tails = random(1, 6); // 1-5
             script.push_back(format_command("led_tails", (int)fg_hue, length, num_tails));
         } else { // marquee
             int light_width = random(2, 6);
             int dark_width = random(4, 11);
-            int speed = random(30, 81);
             char buffer[64];
-            sprintf(buffer, "led_effect:marquee,%d,%d,%d,%d", fg_hue, light_width, dark_width, speed);
+            // Speed is now controlled by led_cycle_time, so we don't pass it here.
+            sprintf(buffer, "led_effect:marquee,%d,%d,%d", fg_hue, light_width, dark_width);
             script.push_back(buffer);
         }
         script.push_back(format_command("led_background", (int)bg_hue, (int)random(10, 26)));
@@ -625,8 +625,8 @@ std::vector<std::string> generateSteadyRotateScript(int duration_minutes) {
 
         long est_rev_time = calculate_rev_time_ms(STEADY_MOTOR_SPEED);
 
-        // 3. Ramp from MAX to MIN
-        script.push_back(format_phase_comment("Ramp Down LED Speed"));
+        // 3. Ramp from slow to fast (MAX_RATIO to MIN_RATIO)
+        script.push_back(format_phase_comment("Ramp Up LED Speed"));
         for (int i = 0; i <= AUTO_STEADY_ROTATE_LED_EFFECT_STEPS; i++) {
             float ratio = map(i, 0, AUTO_STEADY_ROTATE_LED_EFFECT_STEPS, (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MAX_RATIO * 100), (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MIN_RATIO * 100)) / 100.0f;
             long cycle_time = (long)(est_rev_time * ratio);
@@ -635,8 +635,8 @@ std::vector<std::string> generateSteadyRotateScript(int duration_minutes) {
         }
         accumulated_duration_ms += one_way_ramp_duration_ms + step_duration_ms;
 
-        // 4. Ramp from MIN to MAX
-        script.push_back(format_phase_comment("Ramp Up LED Speed"));
+        // 4. Ramp from fast to slow (MIN_RATIO to MAX_RATIO)
+        script.push_back(format_phase_comment("Ramp Down LED Speed"));
         for (int i = 0; i <= AUTO_STEADY_ROTATE_LED_EFFECT_STEPS; i++) {
             float ratio = map(i, 0, AUTO_STEADY_ROTATE_LED_EFFECT_STEPS, (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MIN_RATIO * 100), (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MAX_RATIO * 100)) / 100.0f;
             long cycle_time = (long)(est_rev_time * ratio);

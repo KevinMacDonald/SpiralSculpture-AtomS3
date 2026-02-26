@@ -106,7 +106,7 @@ static unsigned long __rampStepDelay = 0;
 static bool __reverseAfterRampDown = false;
 
 static bool __pendingOff = false; // Flag to handle "off" command safely in the main loop
-static bool __isDirectionClockwise = false; //runs a bit quieter in this direction.
+static bool __isDirectionClockwise = true; // Default startup direction. Set to false for the quieter direction.
 static bool __isMotorRunning = false;
 
 // --- Speed Sync Lookup Table ---
@@ -170,8 +170,6 @@ static uint8_t __marquee_hue = 0;
 static uint8_t __marquee_lit_width = 4;
 static uint8_t __marquee_dark_width = 8;
 static uint8_t __marquee_offset = 0;
-static unsigned long __last_marquee_update = 0;
-static int __marquee_speed_ms = 30;
 
 // Twinkle State
 static uint8_t __twinkle_hue = 0;
@@ -741,16 +739,14 @@ void processCommand(std::string value) {
             } else if (effectName == "marquee") {
                 size_t c2 = params.find(',', c1 + 1);
                 size_t c3 = params.find(',', c2 + 1);
-                size_t c4 = params.find(',', c3 + 1);
-                if (c1 != std::string::npos && c2 != std::string::npos && c3 != std::string::npos && c4 != std::string::npos) {
+                if (c1 != std::string::npos && c2 != std::string::npos && c3 != std::string::npos) {
                     __marquee_hue = atoi(params.substr(c1 + 1, c2 - (c1 + 1)).c_str());
                     __marquee_lit_width = max(1, atoi(params.substr(c2 + 1, c3 - (c2 + 1)).c_str()));
-                    __marquee_dark_width = max(1, atoi(params.substr(c3 + 1, c4 - (c3 + 1)).c_str()));
-                    __marquee_speed_ms = max(10, atoi(params.substr(c4 + 1).c_str()));
+                    __marquee_dark_width = max(1, atoi(params.substr(c3 + 1).c_str()));
                     __activeLedEffect = EFFECT_MARQUEE;
-                    log_t("LED Effect: Marquee (Hue: %d, Lit: %d, Dark: %d, Speed: %dms)", __marquee_hue, __marquee_lit_width, __marquee_dark_width, __marquee_speed_ms);
+                    log_t("LED Effect: Marquee (Hue: %d, Lit: %d, Dark: %d). Speed now follows led_cycle_time.", __marquee_hue, __marquee_lit_width, __marquee_dark_width);
                 } else {
-                    log_t("Invalid marquee parameters. Expected: H,LW,DW,S");
+                    log_t("Invalid marquee parameters. Expected: H,LW,DW");
                 }
             } else if (effectName == "noise") {
                 size_t c2 = params.find(',', c1 + 1);
@@ -903,11 +899,19 @@ void runNoiseEffect() {
 }
 
 void runMarqueeEffect() {
-    if (millis() - __last_marquee_update > (unsigned long)__marquee_speed_ms) {
-        __last_marquee_update = millis();
+    // This effect's speed is now controlled by the global __ledIntervalMs,
+    // which is set by the led_cycle_time command. This allows it to be ramped.
+    unsigned long dynamicInterval = (unsigned long)max(1.0f, __ledIntervalMs);
+    if (millis() - __last_led_strip_update > dynamicInterval) {
+        __last_led_strip_update = millis();
         uint8_t total_width = __marquee_lit_width + __marquee_dark_width;
         if (total_width == 0) return;
-        __marquee_offset = (__marquee_offset + 1) % total_width;
+
+        if (!__isLedReversed) {
+            __marquee_offset = (__marquee_offset + 1) % total_width;
+        } else {
+            __marquee_offset = (__marquee_offset - 1 + total_width) % total_width;
+        }
 
         for (int i = 0; i < __NUM_LEDS; i++) {
             if (((i + __marquee_offset) % total_width) < __marquee_lit_width) {
