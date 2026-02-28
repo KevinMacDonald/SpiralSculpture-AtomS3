@@ -576,6 +576,7 @@ std::vector<std::string> generateSteadyRotateScript(int duration_minutes) {
 
     AUTO_LOG("Generating auto_steady_rotate script for %d minutes...", duration_minutes);
 
+    script.push_back("led_global_brightness:20");
     script.push_back(format_command("motor_speed", STEADY_MOTOR_SPEED));
     script.push_back("hold:3000"); // Give motor time to spin up to steady speed
     accumulated_duration_ms += 3000;

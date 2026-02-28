@@ -800,7 +800,10 @@ void processCommand(std::string value) {
         __cometCount = 0;
         __isLedReversed = false; // Also reset LED direction to forward
         __isManualLedInterval = false;
-        setFinalBrightnessFromDisplayPercent(100);
+        // Let's not reset brightness here. 'led_reset' should only clear active effects,
+        // not override aesthetic settings like brightness. This allows modes like
+        // 'auto_steady_rotate' to maintain a consistent brightness level across cycles.
+        // setFinalBrightnessFromDisplayPercent(100);
         FastLED.clear(true);
         log_t("LEDs reset to black/static.");
     } else if (value == "motor_start") {
@@ -1034,8 +1037,8 @@ void setup() {
     __onboard_led[0] = CRGB(50, 0, 0); // Dim Red to show power is on and motor is stopped
     FastLED.show();
 
-    // Start the motor running automatically on initialization.
-    triggerStart();
+    // Start the system in auto_steady_rotate mode for 480 minutes (8 hours) on initialization.
+    processCommand("auto_steady_rotate:480");
 }
 
 
