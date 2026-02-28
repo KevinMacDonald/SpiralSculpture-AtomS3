@@ -161,6 +161,7 @@ static int __blinkTargetCount = 0; // 0 means loop indefinitely
 static CRGBPalette16 __noise_palette;
 static uint8_t __noise_scale = 30;
 static uint16_t __noise_x, __noise_y, __noise_z;
+static uint8_t __noise_speed = 10;
 
 // Fire State
 static byte __heat[__NUM_LEDS];
@@ -753,7 +754,7 @@ void processCommand(std::string value) {
                 size_t c3 = params.find(',', c2 + 1);
                 if (c1 != std::string::npos && c2 != std::string::npos && c3 != std::string::npos) {
                     std::string paletteName = params.substr(c1 + 1, c2 - (c1 + 1));
-                    int speed = atoi(params.substr(c2 + 1, c3 - (c2 + 1)).c_str());
+                    int speed_val = atoi(params.substr(c2 + 1, c3 - (c2 + 1)).c_str());
                     int scale = atoi(params.substr(c3 + 1).c_str());
 
                     if (paletteName == "lava") __noise_palette = LavaColors_p;
@@ -766,9 +767,10 @@ void processCommand(std::string value) {
                     __noise_x = random16();
                     __noise_y = random16();
                     __noise_z = random16();
+                    __noise_speed = (uint8_t)constrain(speed_val, 0, 255);
                     __noise_scale = (uint8_t)constrain(scale, 1, 150);
                     __activeLedEffect = EFFECT_NOISE;
-                    log_t("LED Effect: Noise (Palette: %s, Speed: %d, Scale: %d)", paletteName.c_str(), speed, scale);
+                    log_t("LED Effect: Noise (Palette: %s, Speed: %d, Scale: %d)", paletteName.c_str(), speed_val, scale);
                 }
             } else if (effectName == "none") {
                 __activeLedEffect = EFFECT_COMET;
@@ -886,8 +888,7 @@ void runFireEffect() {
 
 void runNoiseEffect() {
     // Fill the strip with 1D noise from a palette
-    uint8_t speed = 10; // This could be a parameter
-    __noise_z += speed;
+    __noise_z += __noise_speed;
 
     for (int i = 0; i < __NUM_LEDS; i++) {
         uint8_t noise = inoise8(__noise_x + i * __noise_scale, __noise_y, __noise_z);

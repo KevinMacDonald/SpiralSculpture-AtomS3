@@ -582,6 +582,7 @@ std::vector<std::string> generateSteadyRotateScript(int duration_minutes) {
 
     long step_duration_ms = (long)(AUTO_STEADY_ROTATE_LED_EFFECT_STEP_DURATION_S * 1000.0);
     long one_way_ramp_duration_ms = AUTO_STEADY_ROTATE_LED_EFFECT_STEPS * step_duration_ms;
+    long full_cycle_duration_ms = 2 * (AUTO_STEADY_ROTATE_LED_EFFECT_STEPS + 1) * step_duration_ms;
 
     // Dynamic command limit
     const long HEAP_SAFETY_MARGIN = 50 * 1024;
@@ -598,52 +599,85 @@ std::vector<std::string> generateSteadyRotateScript(int duration_minutes) {
     while (accumulated_duration_ms < total_duration_ms && script.size() < max_commands - 25) {
         script.push_back(format_phase_comment("NEW STEADY CYCLE"));
 
-        // 1. Choose effect and parameters for this cycle
-        bool use_comet = random(100) < 50;
-        uint8_t fg_hue = random(256);
-        uint8_t bg_hue = (fg_hue + random(80, 177)) % 256; // Contrasting bg
+        int effect_choice = random(100);
+        script.push_back("led_reset"); // Clear previous effects
 
-        script.push_back("led_reset"); // Clear previous effects (and sets direction to forward)
-        if (use_comet) {
-            int length = random(15, 41); // 15-40
-            int num_tails = random(1, 6); // 1-5
-            script.push_back(format_command("led_tails", (int)fg_hue, length, num_tails));
-        } else { // marquee
-            int light_width = random(2, 6);
-            int dark_width = random(4, 11);
+        if (effect_choice < 15) { // 15% chance for a Noise effect
+            script.push_back(format_phase_comment("NOISE EFFECT"));
+            const char* palette;
+            if (random(100) < 50) {
+                palette = calm_noise_palettes[random(calm_noise_palettes.size())];
+            } else {
+                palette = energetic_noise_palettes[random(energetic_noise_palettes.size())];
+            }
+            int speed = random(5, 21); // 5-20
+            int scale = random(20, 71); // 20-70
             char buffer[64];
-            // Speed is now controlled by led_cycle_time, so we don't pass it here.
-            sprintf(buffer, "led_effect:marquee,%d,%d,%d", fg_hue, light_width, dark_width);
+            sprintf(buffer, "led_effect:noise,%s,%d,%d", palette, speed, scale);
             script.push_back(buffer);
-        }
-        script.push_back(format_command("led_background", (int)bg_hue, (int)random(10, 26)));
 
-        // 2. Randomly set LED direction. Assumes led_reset sets it to forward.
-        if (random(100) < 50) {
-            script.push_back("led_reverse");
-        }
+            // Hold for the duration of a normal rotational cycle
+            script.push_back(format_command("hold", full_cycle_duration_ms));
+            accumulated_duration_ms += full_cycle_duration_ms;
 
-        long est_rev_time = calculate_rev_time_ms(STEADY_MOTOR_SPEED);
+        } else { // 85% chance for a rotational effect (Comet or Marquee)
+            bool use_comet = random(100) < 50;
+            uint8_t fg_hue = random(256);
+            uint8_t bg_hue = (fg_hue + random(80, 177)) % 256; // Contrasting bg
 
-        // 3. Ramp from slow to fast (MAX_RATIO to MIN_RATIO)
-        script.push_back(format_phase_comment("Ramp Up LED Speed"));
-        for (int i = 0; i <= AUTO_STEADY_ROTATE_LED_EFFECT_STEPS; i++) {
-            float ratio = map(i, 0, AUTO_STEADY_ROTATE_LED_EFFECT_STEPS, (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MAX_RATIO * 100), (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MIN_RATIO * 100)) / 100.0f;
-            long cycle_time = (long)(est_rev_time * ratio);
-            script.push_back(format_command("led_cycle_time", cycle_time));
-            script.push_back(format_command("hold", step_duration_ms));
-        }
-        accumulated_duration_ms += one_way_ramp_duration_ms + step_duration_ms;
+            if (use_comet) {
+                script.push_back(format_phase_comment("COMET EFFECT"));
+                int length = random(15, 41);
+                int num_tails = random(1, 6);
+                script.push_back(format_command("led_tails", (int)fg_hue, length, num_tails));
 
-        // 4. Ramp from fast to slow (MIN_RATIO to MAX_RATIO)
-        script.push_back(format_phase_comment("Ramp Down LED Speed"));
-        for (int i = 0; i <= AUTO_STEADY_ROTATE_LED_EFFECT_STEPS; i++) {
-            float ratio = map(i, 0, AUTO_STEADY_ROTATE_LED_EFFECT_STEPS, (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MIN_RATIO * 100), (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MAX_RATIO * 100)) / 100.0f;
-            long cycle_time = (long)(est_rev_time * ratio);
-            script.push_back(format_command("led_cycle_time", cycle_time));
-            script.push_back(format_command("hold", step_duration_ms));
+                // Add layering for more color variety
+                int color_mod_choice = random(100);
+                if (color_mod_choice < 33) {
+                    script.push_back("led_rainbow");
+                } else if (color_mod_choice < 66) {
+                    uint8_t hue_low = random(256);
+                    uint8_t hue_high = (hue_low + random(60, 120)) % 256;
+                    script.push_back(format_command("led_sine_hue", (int)hue_low, (int)hue_high));
+                }
+                // else: plain comet color
+            } else { // marquee
+                script.push_back(format_phase_comment("MARQUEE EFFECT"));
+                int light_width = random(2, 6);
+                int dark_width = random(4, 11);
+                char buffer[64];
+                sprintf(buffer, "led_effect:marquee,%d,%d,%d", fg_hue, light_width, dark_width);
+                script.push_back(buffer);
+            }
+            script.push_back(format_command("led_background", (int)bg_hue, (int)random(10, 26)));
+
+            // Randomly set LED direction for this cycle
+            if (random(100) < 50) {
+                script.push_back("led_reverse");
+            }
+
+            long est_rev_time = calculate_rev_time_ms(STEADY_MOTOR_SPEED);
+
+            // Ramp from slow to fast (MAX_RATIO to MIN_RATIO)
+            script.push_back(format_phase_comment("Ramp Up LED Speed"));
+            for (int i = 0; i <= AUTO_STEADY_ROTATE_LED_EFFECT_STEPS; i++) {
+                float ratio = map(i, 0, AUTO_STEADY_ROTATE_LED_EFFECT_STEPS, (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MAX_RATIO * 100), (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MIN_RATIO * 100)) / 100.0f;
+                long cycle_time = (long)(est_rev_time * ratio);
+                script.push_back(format_command("led_cycle_time", cycle_time));
+                script.push_back(format_command("hold", step_duration_ms));
+            }
+            accumulated_duration_ms += (AUTO_STEADY_ROTATE_LED_EFFECT_STEPS + 1) * step_duration_ms;
+
+            // Ramp from fast to slow (MIN_RATIO to MAX_RATIO)
+            script.push_back(format_phase_comment("Ramp Down LED Speed"));
+            for (int i = 0; i <= AUTO_STEADY_ROTATE_LED_EFFECT_STEPS; i++) {
+                float ratio = map(i, 0, AUTO_STEADY_ROTATE_LED_EFFECT_STEPS, (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MIN_RATIO * 100), (long)(AUTO_STEADY_ROTATE_LED_MOTOR_MAX_RATIO * 100)) / 100.0f;
+                long cycle_time = (long)(est_rev_time * ratio);
+                script.push_back(format_command("led_cycle_time", cycle_time));
+                script.push_back(format_command("hold", step_duration_ms));
+            }
+            accumulated_duration_ms += (AUTO_STEADY_ROTATE_LED_EFFECT_STEPS + 1) * step_duration_ms;
         }
-        accumulated_duration_ms += one_way_ramp_duration_ms + step_duration_ms;
     }
 
     script.push_back("system_off");
